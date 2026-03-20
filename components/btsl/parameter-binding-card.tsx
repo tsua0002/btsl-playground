@@ -8,7 +8,8 @@ import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Spinner } from '@/components/ui/spinner';
-import { CheckCircle, XCircle, AlertTriangle, Link2, Zap, Lock } from 'lucide-react';
+import { CheckCircle, XCircle, AlertTriangle, Link2, Zap, Lock, Camera } from 'lucide-react';
+import { QRScanner } from '@/components/btsl/qr-scanner';
 import type { WorkflowContext, WorkflowOutputRef } from '@/lib/btsl/types';
 import { BTSLParam, BoundParams, ResolvedUTXO, ERROR_CODES, WARNING_CODES, ParamType } from '@/lib/btsl/types';
 import { fetchUTXO, fetchFeeRate, fetchUTXOByPubkey, fetchUTXOByAddress, validateAddress, validateHexData, parseUTXOString, type PubkeyAddressType } from '@/lib/btsl/api';
@@ -29,6 +30,10 @@ interface ParameterBindingCardProps {
   workflowContext?: WorkflowContext;
   onBound: (boundParams: BoundParams) => void;
   disabled?: boolean;
+  /** Pre-fill values from example selection */
+  prefillValues?: Record<string, string>;
+  /** Called once prefill values have been applied */
+  onPrefillConsumed?: () => void;
 }
 
 interface ParamState {
@@ -49,6 +54,8 @@ export function ParameterBindingCard({
   workflowContext,
   onBound,
   disabled,
+  prefillValues,
+  onPrefillConsumed,
 }: ParameterBindingCardProps) {
   const [paramStates, setParamStates] = useState<Record<string, ParamState>>(() => {
     const initial: Record<string, ParamState> = {};
@@ -68,6 +75,30 @@ export function ParameterBindingCard({
       return next;
     });
   }, [params]);
+
+  // Apply prefill values from example selection (non-UTXO only — UTXOs need real data)
+  const [appliedPrefillKey, setAppliedPrefillKey] = useState<string | null>(null);
+  useEffect(() => {
+    if (!prefillValues) return;
+    const prefillKey = JSON.stringify(prefillValues);
+    if (prefillKey === appliedPrefillKey) return;
+
+    setParamStates((prev) => {
+      const next = { ...prev };
+      for (const p of params) {
+        if (p.type === 'UTXO') continue; // UTXOs require real data, skip
+        const val = prefillValues[p.name];
+        if (val !== undefined && val !== '') {
+          next[p.name] = { ...(next[p.name] ?? {}), value: val, isValid: undefined, error: undefined };
+        }
+      }
+      return next;
+    });
+
+    setAppliedPrefillKey(prefillKey);
+    onPrefillConsumed?.();
+  }, [prefillValues, params, appliedPrefillKey, onPrefillConsumed]);
+
   const [payloadAsText, setPayloadAsText] = useState<Record<string, boolean>>({});
   const [isValidating, setIsValidating] = useState(false);
   const [validationErrors, setValidationErrors] = useState<string[]>([]);
@@ -419,6 +450,20 @@ export function ParameterBindingCard({
                     className="font-mono text-sm"
                     disabled={disabled}
                   />
+                  <QRScanner
+                    onScan={(data) => handleValueChange(param, data.trim())}
+                    title={`Scan UTXO QR for @${param.name}`}
+                    trigger={
+                      <button
+                        type="button"
+                        className="flex items-center justify-center h-9 w-9 rounded-md border border-input bg-background hover:bg-muted transition-colors shrink-0"
+                        title="Scan QR code"
+                        disabled={disabled}
+                      >
+                        <Camera className="h-4 w-4 text-muted-foreground" />
+                      </button>
+                    }
+                  />
                   <Button
                     variant="outline"
                     size="sm"
@@ -470,14 +515,30 @@ export function ParameterBindingCard({
           )}
 
           {param.type === 'ADDRESS' && (
-            <Input
-              id={param.name}
-              placeholder="bc1q... or 1... or 3..."
-              value={state.value}
-              onChange={(e) => handleValueChange(param, e.target.value)}
-              className="font-mono text-sm"
-              disabled={disabled}
-            />
+            <>
+              <Input
+                id={param.name}
+                placeholder="bc1q... or 1... or 3..."
+                value={state.value}
+                onChange={(e) => handleValueChange(param, e.target.value)}
+                className="font-mono text-sm"
+                disabled={disabled}
+              />
+              <QRScanner
+                onScan={(data) => handleValueChange(param, data.trim())}
+                title={`Scan address QR for @${param.name}`}
+                trigger={
+                  <button
+                    type="button"
+                    className="flex items-center justify-center h-9 w-9 rounded-md border border-input bg-background hover:bg-muted transition-colors shrink-0"
+                    title="Scan QR code"
+                    disabled={disabled}
+                  >
+                    <Camera className="h-4 w-4 text-muted-foreground" />
+                  </button>
+                }
+              />
+            </>
           )}
 
           {param.type === 'HEX_DATA' && (
