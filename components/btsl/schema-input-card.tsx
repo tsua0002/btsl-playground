@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState, useCallback } from 'react';
+import { useMemo, useState, useCallback, useEffect } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -16,14 +16,16 @@ import { EXAMPLES_CATALOG, EXAMPLES_CATALOG_BY_CATEGORY } from '@/lib/btsl/examp
 interface SchemaInputCardProps {
   onParsed: (result: ParseResult) => void;
   disabled?: boolean;
+  activeExampleId?: string | null;
+  onExampleSelected?: (id: string) => void;
 }
 
-export function SchemaInputCard({ onParsed, disabled }: SchemaInputCardProps) {
+export function SchemaInputCard({ onParsed, disabled, activeExampleId, onExampleSelected }: SchemaInputCardProps) {
   const [schema, setSchema] = useState('');
   const [parseResult, setParseResult] = useState<ParseResult | null>(null);
   const [isParsing, setIsParsing] = useState(false);
   const [mode, setMode] = useState<'examples' | 'custom'>('examples');
-  const [selectedExampleId, setSelectedExampleId] = useState<string | null>(EXAMPLES_CATALOG[0]?.id ?? null);
+  const [selectedExampleId, setSelectedExampleId] = useState<string | null>(activeExampleId ?? EXAMPLES_CATALOG[0]?.id ?? null);
   const [openCategoryId, setOpenCategoryId] = useState<ExampleCategoryId | undefined>('simple_payment');
 
   const selectedExample: ExampleDefinition | null = useMemo(() => {
@@ -74,6 +76,7 @@ export function SchemaInputCard({ onParsed, disabled }: SchemaInputCardProps) {
       setOpenCategoryId(example.categoryId);
       setSchema(example.btsl);
       setParseResult(null);
+      onExampleSelected?.(example.id);
 
       setIsParsing(true);
       setTimeout(() => {
@@ -109,6 +112,19 @@ export function SchemaInputCard({ onParsed, disabled }: SchemaInputCardProps) {
     },
     [disabled, onParsed]
   );
+
+  // Sync external activeExampleId into local state and auto-apply
+  const [lastAppliedExternalId, setLastAppliedExternalId] = useState<string | null>(null);
+  useEffect(() => {
+    if (activeExampleId && activeExampleId !== lastAppliedExternalId) {
+      const ex = EXAMPLES_CATALOG.find((e) => e.id === activeExampleId);
+      if (ex) {
+        setLastAppliedExternalId(activeExampleId);
+        applyExample(ex);
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeExampleId]);
 
   const handleFileUpload = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -295,19 +311,37 @@ export function SchemaInputCard({ onParsed, disabled }: SchemaInputCardProps) {
               </Accordion>
 
             {mode === 'examples' && selectedExample && (
-              <div className="rounded-lg border bg-background/60 p-3 space-y-2">
-                <div className="text-sm font-medium">Quick tutorial</div>
-                <div className="text-xs text-muted-foreground">{selectedExample.subtitle}</div>
-                <ol className="list-decimal ml-4 text-sm space-y-1">
-                  {selectedExample.quickTutorial.steps.map((s, i) => (
-                    <li key={i}>{s}</li>
-                  ))}
-                </ol>
-                <div className="text-xs text-muted-foreground">
+              <div className="rounded-xl border bg-background/60 p-4 space-y-3">
+                <div className="flex items-start gap-2">
+                  <span className="text-xl leading-none shrink-0">{selectedExample.icon}</span>
+                  <div className="space-y-0.5">
+                    <div className="text-sm font-semibold">{selectedExample.title}</div>
+                    <div className="text-xs text-muted-foreground leading-relaxed">{selectedExample.description}</div>
+                  </div>
+                </div>
+                {selectedExample.useCase && (
+                  <div className="text-xs text-muted-foreground italic border-l-2 border-primary/30 pl-2">
+                    Use case: {selectedExample.useCase}
+                  </div>
+                )}
+                <div>
+                  <div className="text-xs font-medium mb-1.5">Step-by-step guide:</div>
+                  <ol className="list-decimal ml-4 text-sm space-y-1 text-muted-foreground">
+                    {selectedExample.quickTutorial.steps.map((s, i) => (
+                      <li key={i} className="leading-relaxed">{s}</li>
+                    ))}
+                  </ol>
+                </div>
+                <div className="text-xs text-muted-foreground pt-1 border-t">
                   Required params:{' '}
-                  <span className="font-mono">
+                  <span className="font-mono text-foreground">
                     {selectedExample.quickTutorial.requiredParams.join(', ')}
                   </span>
+                  {selectedExample.prefillParams && Object.keys(selectedExample.prefillParams).length > 0 && (
+                    <span className="ml-2 text-green-600">
+                      ✓ Demo values pre-filled for non-UTXO params
+                    </span>
+                  )}
                 </div>
               </div>
             )}

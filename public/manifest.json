@@ -1,0 +1,37 @@
+{
+  "name": "BTSL Schema Playground",
+  "short_name": "BTSL Playground",
+  "description": "Bitcoin Transaction Schema Language to PSBT Compiler. Build and sign Bitcoin transactions declaratively.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#f97316",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/apple-icon.png",
+      "sizes": "180x180",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-light-32x32.png",
+      "sizes": "32x32",
+      "type": "image/png"
+    },
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ],
+  "categories": ["finance", "utilities", "developer tools"],
+  "screenshots": [],
+  "shortcuts": [
+    {
+      "name": "Simple Payment",
+      "url": "/?example=simple_payment",
+      "description": "Start a new simple payment transaction"
+    }
+  ]
+}

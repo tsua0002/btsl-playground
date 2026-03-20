@@ -9,18 +9,21 @@ import { Label } from '@/components/ui/label';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion';
-import { 
-  FileOutput, 
-  Copy, 
-  CheckCircle, 
-  AlertTriangle, 
+import {
+  FileOutput,
+  Copy,
+  CheckCircle,
+  AlertTriangle,
   ArrowRightLeft,
   Info,
   Lock,
-  Unlock
+  Unlock,
+  ExternalLink,
+  QrCode,
 } from 'lucide-react';
 import type { ExecutionResult } from './code-generation-card';
 import type { WorkflowContext } from '@/lib/btsl/types';
+import { QRCodeModal } from '@/components/btsl/qr-code-display';
 
 interface PSBTOutputCardProps {
   result: ExecutionResult | null;
@@ -28,9 +31,11 @@ interface PSBTOutputCardProps {
   workflowContext?: WorkflowContext;
   onSetTxid?: (schemaName: string, txid: string) => void;
   disabled?: boolean;
+  /** Blockchain explorer link template with {txid} placeholder */
+  explorerLinkTemplate?: string;
 }
 
-export function PSBTOutputCard({ result, schemaName, workflowContext, onSetTxid, disabled }: PSBTOutputCardProps) {
+export function PSBTOutputCard({ result, schemaName, workflowContext, onSetTxid, disabled, explorerLinkTemplate }: PSBTOutputCardProps) {
   const [copiedBase64, setCopiedBase64] = useState(false);
   const [copiedHex, setCopiedHex] = useState(false);
   const [txidDraft, setTxidDraft] = useState('');
@@ -165,8 +170,18 @@ export function PSBTOutputCard({ result, schemaName, workflowContext, onSetTxid,
                   Save
                 </Button>
               </div>
-              <div className="text-xs text-muted-foreground">
-                Child schemas with <span className="font-mono">DEPENDS_ON</span> will unlock once the parent txid is saved.
+              <div className="flex items-center gap-2 text-xs text-muted-foreground flex-wrap">
+                <span>Child schemas with <span className="font-mono">DEPENDS_ON</span> will unlock once the parent txid is saved.</span>
+                {explorerLinkTemplate && txidDraft.trim().length === 64 && (
+                  <a
+                    href={explorerLinkTemplate.replace('{txid}', txidDraft.trim())}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-1 text-primary hover:underline"
+                  >
+                    View on Blockstream <ExternalLink className="h-3 w-3" />
+                  </a>
+                )}
               </div>
             </div>
           </div>
@@ -181,7 +196,7 @@ export function PSBTOutputCard({ result, schemaName, workflowContext, onSetTxid,
           
           <TabsContent value="base64" className="space-y-2">
             <div className="relative">
-              <div className="rounded-lg border bg-muted/30 p-4">
+              <div className="rounded-xl border bg-muted/30 p-4">
                 <pre className="text-xs font-mono break-all whitespace-pre-wrap max-h-[150px] overflow-auto">
                   {psbtBase64}
                 </pre>
@@ -199,15 +214,28 @@ export function PSBTOutputCard({ result, schemaName, workflowContext, onSetTxid,
                 )}
               </Button>
             </div>
-            <Button onClick={handleCopyBase64} variant="outline" className="w-full">
-              <Copy className="mr-2 h-4 w-4" />
-              Copy PSBT Base64
-            </Button>
+            <div className="flex gap-2">
+              <Button onClick={handleCopyBase64} variant="outline" className="flex-1">
+                <Copy className="mr-2 h-4 w-4" />
+                Copy Base64
+              </Button>
+              <QRCodeModal
+                data={psbtBase64 ?? ''}
+                title="PSBT QR Code (Base64)"
+                label="Scan with SeedSigner, Coldcard, or compatible device"
+                trigger={
+                  <Button variant="outline" size="sm" className="shrink-0">
+                    <QrCode className="mr-2 h-4 w-4" />
+                    QR Code
+                  </Button>
+                }
+              />
+            </div>
           </TabsContent>
-          
+
           <TabsContent value="hex" className="space-y-2">
             <div className="relative">
-              <div className="rounded-lg border bg-muted/30 p-4">
+              <div className="rounded-xl border bg-muted/30 p-4">
                 <pre className="text-xs font-mono break-all whitespace-pre-wrap max-h-[150px] overflow-auto">
                   {psbtHex}
                 </pre>
@@ -225,17 +253,51 @@ export function PSBTOutputCard({ result, schemaName, workflowContext, onSetTxid,
                 )}
               </Button>
             </div>
-            <Button onClick={handleCopyHex} variant="outline" className="w-full">
-              <Copy className="mr-2 h-4 w-4" />
-              Copy PSBT Hex
-            </Button>
+            <div className="flex gap-2">
+              <Button onClick={handleCopyHex} variant="outline" className="flex-1">
+                <Copy className="mr-2 h-4 w-4" />
+                Copy Hex
+              </Button>
+              <QRCodeModal
+                data={psbtHex ?? ''}
+                title="PSBT QR Code (Hex)"
+                label="Scan with compatible signing device"
+                trigger={
+                  <Button variant="outline" size="sm" className="shrink-0">
+                    <QrCode className="mr-2 h-4 w-4" />
+                    QR Code
+                  </Button>
+                }
+              />
+            </div>
           </TabsContent>
         </Tabs>
 
         {/* How to sign */}
-        <div className="rounded-lg border bg-muted/30 p-4">
+        <div className="rounded-xl border bg-muted/30 p-4">
           <div className="text-sm font-medium mb-2">How to sign this PSBT</div>
           <Accordion type="single" collapsible>
+            <AccordionItem value="seedsigner">
+              <AccordionTrigger>
+                <span className="flex items-center gap-2">
+                  SeedSigner / Air-Gap QR Devices
+                  <span className="ml-1 text-xs text-muted-foreground font-normal">(recommended for cold storage)</span>
+                </span>
+              </AccordionTrigger>
+              <AccordionContent>
+                <ol className="list-decimal ml-4 space-y-1.5 text-sm">
+                  <li>Click <strong>QR Code</strong> on the Base64 tab above to show the PSBT as a scannable QR code.</li>
+                  <li>On your SeedSigner: navigate to <span className="font-mono">Sign → PSBT</span> and scan the QR.</li>
+                  <li>SeedSigner will show transaction details — verify the outputs and fee carefully.</li>
+                  <li>Approve the signing. SeedSigner will display a signed PSBT as a QR code.</li>
+                  <li>Scan the signed QR back into a coordinator (Sparrow, Specter) and broadcast.</li>
+                </ol>
+                <p className="text-xs text-muted-foreground mt-2">
+                  For large PSBTs, use Sparrow as an intermediary coordinator which supports animated QR / UR encoding for Coldcard and SeedSigner.
+                </p>
+              </AccordionContent>
+            </AccordionItem>
+
             <AccordionItem value="sparrow">
               <AccordionTrigger>Sparrow Wallet (desktop)</AccordionTrigger>
               <AccordionContent>
@@ -243,7 +305,7 @@ export function PSBTOutputCard({ result, schemaName, workflowContext, onSetTxid,
                   <li>Copy the PSBT Base64 from this page.</li>
                   <li>In Sparrow: <span className="font-mono">File → Import PSBT</span> (or paste into the PSBT import dialog).</li>
                   <li>Review inputs/outputs and fee rate, then click <span className="font-mono">Sign</span>.</li>
-                  <li>Export the signed PSBT or broadcast.</li>
+                  <li>Export the signed PSBT or broadcast directly.</li>
                 </ol>
               </AccordionContent>
             </AccordionItem>
@@ -371,16 +433,36 @@ export function PSBTOutputCard({ result, schemaName, workflowContext, onSetTxid,
         </div>
 
         {/* Export Hint */}
-        <Alert>
+        <Alert className="rounded-xl">
           <Info className="h-4 w-4" />
           <AlertTitle>Next Steps</AlertTitle>
           <AlertDescription>
             <ol className="list-decimal list-inside mt-2 space-y-1 text-sm">
-              <li>Copy the PSBT Base64 above</li>
-              <li>Import into your signing device (Sparrow, Coldcard, etc.)</li>
-              <li>Review the transaction details carefully</li>
+              <li>Copy the PSBT Base64 above (or use QR for air-gap devices)</li>
+              <li>Import into your signing device (Sparrow, Coldcard, SeedSigner, etc.)</li>
+              <li>Review all outputs and the fee rate carefully before signing</li>
               <li>Sign with your hardware wallet or software signer</li>
               <li>Broadcast the signed transaction</li>
+              <li>
+                Verify the confirmed transaction on{' '}
+                <a
+                  href="https://blockstream.info"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-primary hover:underline inline-flex items-center gap-1"
+                >
+                  Blockstream Explorer <ExternalLink className="h-3 w-3" />
+                </a>
+                {' '}or{' '}
+                <a
+                  href="https://mempool.space"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-primary hover:underline inline-flex items-center gap-1"
+                >
+                  Mempool.space <ExternalLink className="h-3 w-3" />
+                </a>
+              </li>
             </ol>
           </AlertDescription>
         </Alert>

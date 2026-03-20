@@ -1,17 +1,23 @@
 'use client';
 
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo, useEffect } from 'react';
 import { SchemaInputCard } from '@/components/btsl/schema-input-card';
 import { ParameterBindingCard } from '@/components/btsl/parameter-binding-card';
 import { CodeGenerationCard, ExecutionResult } from '@/components/btsl/code-generation-card';
 import { PSBTOutputCard } from '@/components/btsl/psbt-output-card';
+import { WelcomeBanner } from '@/components/btsl/welcome-banner';
+import { QuickExampleCards } from '@/components/btsl/quick-example-cards';
+import { PWAInstallPrompt } from '@/components/btsl/pwa-install-prompt';
 import type { WorkflowContext, WorkflowOutputRef } from '@/lib/btsl/types';
 import { BTSLDocument, BTSLParam, BoundParams, ParseResult } from '@/lib/btsl/types';
 import type { PubkeyAddressType } from '@/lib/btsl/api';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { orderSchemasByDependsOn } from '@/lib/btsl/workflow';
-import { Bitcoin, FileCode, Github, ExternalLink } from 'lucide-react';
+import { Bitcoin, FileCode, Github, ExternalLink, Sun, Moon, Monitor } from 'lucide-react';
+import { useTheme } from 'next-themes';
+import { useFirstVisit } from '@/hooks/use-first-visit';
+import type { ExampleDefinition } from '@/lib/btsl/examples-catalog';
 
 export default function BTSLPlayground() {
   // Pipeline state
@@ -30,6 +36,26 @@ export default function BTSLPlayground() {
   const [card2Complete, setCard2Complete] = useState(false);
   const [card3Complete, setCard3Complete] = useState(false);
 
+  // Active example tracking (for quick example cards highlight)
+  const [activeExampleId, setActiveExampleId] = useState<string | null>(null);
+  // Pre-fill params from selected example
+  const [pendingPrefill, setPendingPrefill] = useState<Record<string, string> | null>(null);
+
+  // Onboarding / first-visit
+  const { isFirstVisit, isExperienced, loaded: visitLoaded, markExperienced, incrementSuccessfulRuns } = useFirstVisit();
+  const [showWelcome, setShowWelcome] = useState(false);
+
+  useEffect(() => {
+    if (visitLoaded && isFirstVisit && !isExperienced) {
+      setShowWelcome(true);
+    }
+  }, [visitLoaded, isFirstVisit, isExperienced]);
+
+  const handleDismissWelcome = useCallback(() => {
+    setShowWelcome(false);
+    markExperienced();
+  }, [markExperienced]);
+
   const handleSchemaParsed = useCallback((result: ParseResult) => {
     setParseResult(result);
     if (result.success && result.document && result.params) {
@@ -42,7 +68,6 @@ export default function BTSLPlayground() {
       setWorkflowContext({ steps: {} });
       setExecutionResultsBySchema({});
       setCard1Complete(true);
-      // Reset downstream cards
       setCard2Complete(false);
       setCard3Complete(false);
       setBoundParams(null);
@@ -54,15 +79,15 @@ export default function BTSLPlayground() {
   const handleParamsBound = useCallback((bound: BoundParams) => {
     setBoundParams(bound);
     setCard2Complete(true);
-    // Reset downstream cards
     setCard3Complete(false);
   }, []);
 
   const handleExecutionResult = useCallback((result: ExecutionResult) => {
     if (result.success) {
       setCard3Complete(true);
+      incrementSuccessfulRuns();
     }
-  }, []);
+  }, [incrementSuccessfulRuns]);
 
   const activeExecutionResult = useMemo(() => {
     const name = activeSchemaName ?? workflowOrder[0] ?? null;
@@ -185,35 +210,47 @@ export default function BTSLPlayground() {
     }
   }, [handleExecutionResult, document, activeSchemaName, activeSchemaIndex]);
 
+  const handleSelectQuickExample = useCallback((example: ExampleDefinition) => {
+    setActiveExampleId(example.id);
+    setPendingPrefill(example.prefillParams ?? null);
+    setShowWelcome(false);
+  }, []);
+
+  const handleClearPrefill = useCallback(() => {
+    setPendingPrefill(null);
+  }, []);
+
   return (
     <div className="min-h-screen bg-background">
       {/* Header */}
-      <header className="border-b bg-card">
-        <div className="container mx-auto px-4 py-4">
+      <header className="border-b bg-card sticky top-0 z-40">
+        <div className="container mx-auto px-4 py-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <div className="flex items-center justify-center h-10 w-10 rounded-lg bg-primary text-primary-foreground">
-                <Bitcoin className="h-6 w-6" />
+              <div className="flex items-center justify-center h-9 w-9 rounded-lg bg-primary text-primary-foreground shrink-0">
+                <Bitcoin className="h-5 w-5" />
               </div>
               <div>
-                <h1 className="text-xl font-bold">BTSL Schema Playground</h1>
-                <p className="text-sm text-muted-foreground">
-                  Bitcoin Transaction Schema Language to PSBT Compiler
+                <h1 className="text-lg font-bold leading-tight">BTSL Schema Playground</h1>
+                <p className="text-xs text-muted-foreground hidden sm:block">
+                  Bitcoin Transaction Schema Language → PSBT Compiler
                 </p>
               </div>
             </div>
-            
-            <div className="flex items-center gap-4">
-              <Badge variant="outline" className="text-xs">
+
+            <div className="flex items-center gap-2">
+              <Badge variant="outline" className="text-xs hidden sm:flex">
                 v1.0 Preview
               </Badge>
+              <ThemeToggle />
               <a
                 href="https://github.com/tsua0002/btsl-playground"
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-muted-foreground hover:text-foreground transition-colors"
+                className="text-muted-foreground hover:text-foreground transition-colors p-1.5 rounded-md hover:bg-muted"
+                title="View on GitHub"
               >
-                <Github className="h-5 w-5" />
+                <Github className="h-4 w-4" />
               </a>
             </div>
           </div>
@@ -224,30 +261,30 @@ export default function BTSLPlayground() {
       <div className="border-b bg-muted/30">
         <div className="container mx-auto px-4 py-3">
           <div className="flex items-center justify-center gap-2">
-            <PipelineStep 
-              number={1} 
-              label="Schema Input" 
+            <PipelineStep
+              number={1}
+              label="Schema Input"
               active={!card1Complete}
               complete={card1Complete}
             />
             <PipelineConnector active={card1Complete} />
-            <PipelineStep 
-              number={2} 
-              label="Parameter Binding" 
+            <PipelineStep
+              number={2}
+              label="Parameter Binding"
               active={card1Complete && !card2Complete}
               complete={card2Complete}
             />
             <PipelineConnector active={card2Complete} />
-            <PipelineStep 
-              number={3} 
-              label="Code Generation" 
+            <PipelineStep
+              number={3}
+              label="Code Generation"
               active={card2Complete && !card3Complete}
               complete={card3Complete}
             />
             <PipelineConnector active={card3Complete} />
-            <PipelineStep 
-              number={4} 
-              label="PSBT Output" 
+            <PipelineStep
+              number={4}
+              label="PSBT Output"
               active={card3Complete}
               complete={false}
             />
@@ -256,10 +293,42 @@ export default function BTSLPlayground() {
       </div>
 
       {/* Main Content */}
-      <main className="container mx-auto px-4 py-8">
+      <main className="container mx-auto px-4 py-6">
         <div className="max-w-4xl mx-auto space-y-6">
+          {/* Welcome Banner — shown on first visit */}
+          {showWelcome && visitLoaded && (
+            <WelcomeBanner onDismiss={handleDismissWelcome} />
+          )}
+
+          {/* Quick Example Cards — shown to new users; experienced users can toggle */}
+          {visitLoaded && (
+            <>
+              {!isExperienced ? (
+                <QuickExampleCards
+                  onSelectExample={handleSelectQuickExample}
+                  activeExampleId={activeExampleId}
+                />
+              ) : (
+                <div className="flex justify-end">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-xs text-muted-foreground"
+                    onClick={() => {
+                      localStorage.removeItem('btsl_experienced');
+                      window.location.reload();
+                    }}
+                  >
+                    Show examples panel
+                  </Button>
+                </div>
+              )}
+            </>
+          )}
+
+          {/* Workflow selector (multi-schema) */}
           {document && workflowOrder.length > 1 && (
-            <div className="rounded-lg border bg-card p-4 space-y-2">
+            <div className="rounded-xl border bg-card p-4 space-y-2">
               <div className="flex items-center justify-between gap-3">
                 <div className="text-sm font-medium">Workflow schemas</div>
                 <div className="text-xs text-muted-foreground">
@@ -300,14 +369,16 @@ export default function BTSLPlayground() {
           )}
 
           {/* Card 1 - Schema Input */}
-          <SchemaInputCard 
-            onParsed={handleSchemaParsed} 
+          <SchemaInputCard
+            onParsed={handleSchemaParsed}
             disabled={false}
+            activeExampleId={activeExampleId}
+            onExampleSelected={(id) => setActiveExampleId(id)}
           />
 
           {/* Card 2 - Parameter Binding */}
           <div id="card-parameter-binding">
-            <ParameterBindingCard 
+            <ParameterBindingCard
               params={params.filter((p) => visibleParamNames.includes(p.name))}
               payloadParamNames={document ? Array.from(new Set(
                 document.schemas.flatMap(s =>
@@ -323,11 +394,13 @@ export default function BTSLPlayground() {
               workflowContext={workflowContext}
               onBound={handleParamsBound}
               disabled={!card1Complete}
+              prefillValues={pendingPrefill ?? undefined}
+              onPrefillConsumed={handleClearPrefill}
             />
           </div>
 
           {/* Card 3 - Code Generation */}
-          <CodeGenerationCard 
+          <CodeGenerationCard
             document={document}
             boundParams={boundParams}
             workflowContext={workflowContext}
@@ -337,21 +410,24 @@ export default function BTSLPlayground() {
           />
 
           {/* Card 4 - PSBT Output */}
-          <PSBTOutputCard 
+          <PSBTOutputCard
             result={activeExecutionResult}
             schemaName={activeSchemaName ?? (document?.schemas?.[activeSchemaIndex]?.name ?? null)}
             workflowContext={workflowContext}
             onSetTxid={handleSetWorkflowTxid}
             disabled={!card3Complete}
+            explorerLinkTemplate="https://blockstream.info/tx/{txid}"
           />
         </div>
       </main>
+
+      <PWAInstallPrompt />
 
       {/* Footer */}
       <footer className="border-t bg-card mt-auto">
         <div className="container mx-auto px-4 py-6">
           <div className="flex flex-col items-center justify-center gap-4 text-center">
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <div className="flex items-center gap-2 text-sm text-muted-foreground flex-wrap justify-center">
               <FileCode className="h-4 w-4" />
               <a
                 href="https://github.com/tsua0002/btsl-standard"
@@ -373,27 +449,27 @@ export default function BTSLPlayground() {
               <span className="mx-2">|</span>
               <span>All operations run client-side — No private keys involved</span>
             </div>
-            
-            <div className="flex items-center gap-4 text-xs text-muted-foreground">
-              <a 
-                href="https://blockstream.info" 
-                target="_blank" 
+
+            <div className="flex items-center gap-4 text-xs text-muted-foreground flex-wrap justify-center">
+              <a
+                href="https://blockstream.info"
+                target="_blank"
                 rel="noopener noreferrer"
                 className="flex items-center gap-1 hover:text-foreground transition-colors"
               >
                 Blockstream API <ExternalLink className="h-3 w-3" />
               </a>
-              <a 
-                href="https://mempool.space" 
-                target="_blank" 
+              <a
+                href="https://mempool.space"
+                target="_blank"
                 rel="noopener noreferrer"
                 className="flex items-center gap-1 hover:text-foreground transition-colors"
               >
                 Mempool.space API <ExternalLink className="h-3 w-3" />
               </a>
-              <a 
-                href="https://github.com/paulmillr/scure-btc-signer" 
-                target="_blank" 
+              <a
+                href="https://github.com/paulmillr/scure-btc-signer"
+                target="_blank"
                 rel="noopener noreferrer"
                 className="flex items-center gap-1 hover:text-foreground transition-colors"
               >
@@ -407,25 +483,57 @@ export default function BTSLPlayground() {
   );
 }
 
+// Theme Toggle Component
+function ThemeToggle() {
+  const { theme, setTheme } = useTheme();
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => setMounted(true), []);
+
+  if (!mounted) {
+    return <div className="h-8 w-8" />;
+  }
+
+  const icons = {
+    light: <Sun className="h-4 w-4" />,
+    dark: <Moon className="h-4 w-4" />,
+    system: <Monitor className="h-4 w-4" />,
+  };
+
+  const next = theme === 'light' ? 'dark' : theme === 'dark' ? 'system' : 'light';
+  const label = `Switch to ${next} mode`;
+
+  return (
+    <button
+      onClick={() => setTheme(next)}
+      className="text-muted-foreground hover:text-foreground transition-colors p-1.5 rounded-md hover:bg-muted"
+      title={label}
+      aria-label={label}
+    >
+      {icons[(theme as keyof typeof icons) ?? 'system'] ?? icons.system}
+    </button>
+  );
+}
+
 // Pipeline Step Component
-function PipelineStep({ 
-  number, 
-  label, 
-  active, 
-  complete 
-}: { 
-  number: number; 
-  label: string; 
-  active: boolean; 
+function PipelineStep({
+  number,
+  label,
+  active,
+  complete,
+}: {
+  number: number;
+  label: string;
+  active: boolean;
   complete: boolean;
 }) {
   return (
     <div className={`flex items-center gap-2 ${!active && !complete ? 'opacity-50' : ''}`}>
-      <div 
+      <div
         className={`
-          flex items-center justify-center h-7 w-7 rounded-full text-xs font-bold
-          ${complete ? 'bg-green-600 text-white' : 
-            active ? 'bg-primary text-primary-foreground' : 
+          flex items-center justify-center h-7 w-7 rounded-full text-xs font-bold shrink-0
+          ${complete ? 'bg-green-600 text-white' :
+            active ? 'bg-primary text-primary-foreground' :
             'bg-muted text-muted-foreground'}
         `}
       >
@@ -441,6 +549,6 @@ function PipelineStep({
 // Pipeline Connector
 function PipelineConnector({ active }: { active: boolean }) {
   return (
-    <div className={`w-8 h-0.5 ${active ? 'bg-green-600' : 'bg-muted'}`} />
+    <div className={`w-6 h-0.5 shrink-0 ${active ? 'bg-green-600' : 'bg-muted'}`} />
   );
 }
