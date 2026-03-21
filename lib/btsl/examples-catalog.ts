@@ -253,7 +253,7 @@ export const EXAMPLES_CATALOG: ExampleDefinition[] = [
     subtitle: 'One input, two outputs with CHANGE',
     description: 'Send Bitcoin to a fixed address while returning change to your own wallet. The most common transaction pattern — one input from your key, one payment output, one change output.',
     useCase: 'Sending BTC to a merchant, friend, or exchange deposit address.',
-    icon: '💸',
+    icon: '',
     btsl: EXAMPLE_SIMPLE_PAYMENT,
     quickTutorial: {
       steps: [
@@ -278,7 +278,7 @@ export const EXAMPLES_CATALOG: ExampleDefinition[] = [
     subtitle: 'Two inputs, multiple outputs + fees',
     description: 'Coordinate a shared payment where Bob and Caro each contribute funds toward a common expense for Alice, with each receiving change. A declarative multi-party transaction.',
     useCase: 'Splitting a shared bill, group purchases, or on-chain cost-sharing.',
-    icon: '🤝',
+    icon: '',
     btsl: EXAMPLE_TRI_COUNT,
     quickTutorial: {
       steps: [
@@ -307,7 +307,7 @@ export const EXAMPLES_CATALOG: ExampleDefinition[] = [
     subtitle: 'P2WSH spend — either key can sign',
     description: 'Spend from a 1-of-2 multisig P2WSH output. Either key can sign independently — ideal for backup key scenarios where the primary or recovery key can act alone.',
     useCase: 'Backup key setup: primary or recovery key can spend independently.',
-    icon: '🗝️',
+    icon: '',
     btsl: EXAMPLE_MULTISIG_1OF2,
     quickTutorial: {
       steps: [
@@ -333,7 +333,7 @@ export const EXAMPLES_CATALOG: ExampleDefinition[] = [
     subtitle: 'P2WSH spend — both keys must sign',
     description: 'Spend from a 2-of-2 multisig P2WSH output. Both keys are required to sign — perfect for joint custody, escrow arrangements, or hardware wallet + software 2FA.',
     useCase: 'Joint account, escrow, or two-factor Bitcoin custody.',
-    icon: '🔐',
+    icon: '',
     btsl: EXAMPLE_MULTISIG_2OF2,
     quickTutorial: {
       steps: [
@@ -359,7 +359,7 @@ export const EXAMPLES_CATALOG: ExampleDefinition[] = [
     subtitle: 'Embed arbitrary data on-chain + CHANGE',
     description: 'Publish arbitrary hex data in an OP_RETURN output permanently stored on the Bitcoin blockchain. Used for protocol messages, timestamps, content hashes, and metadata.',
     useCase: 'On-chain data anchoring, protocol deployments, or timestamping.',
-    icon: '📝',
+    icon: '',
     btsl: EXAMPLE_OP_RETURN_DEPLOY,
     quickTutorial: {
       steps: [
@@ -383,7 +383,7 @@ export const EXAMPLES_CATALOG: ExampleDefinition[] = [
     subtitle: 'VAULT_DEPOSIT → VAULT_UNLOCK (100-block CSV)',
     description: 'A two-step workflow: deposit into a Taproot vault with a 100-block CSV timelock, then unlock after the timelock expires. Demonstrates BTSL multi-schema DEPENDS_ON chaining.',
     useCase: 'Cold storage vault, savings protocol, or time-delayed Bitcoin custody.',
-    icon: '🏦',
+    icon: '',
     btsl: EXAMPLE_TAPROOT_VAULT,
     quickTutorial: {
       steps: [
