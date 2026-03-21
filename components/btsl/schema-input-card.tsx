@@ -185,6 +185,9 @@ export function SchemaInputCard({ onParsed, disabled, activeExampleId, onExample
             </Button>
           </label>
         </div>
+
+        <Textarea
+          placeholder="Paste your BTSL schema here..."
           value={schema}
           onChange={(e) => {
             setSchema(e.target.value);
