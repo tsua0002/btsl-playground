@@ -4,3 +4,7 @@ node_modules/
 .DS_Store
 .vercel
 tsconfig.tsbuildinfo
+plans/
+
+# Rust CLIs under tools/
+tools/**/target/

@@ -66,16 +66,18 @@ function checkIndentation(lines: string[]): BTSLError | null {
   return null;
 }
 
-// Get indentation level
+// Get indentation level (relative units for nesting comparisons).
+// Spaces: each 2 columns ≈ one step so both 2-space and 4-space styles work (old code used /4 only, which broke 2-space files).
+// Tabs: each tab counts as two steps so one tab ≈ one 4-space step in typical editor settings.
 function getIndentLevel(line: string): number {
   const match = line.match(/^(\s*)/);
   if (!match) return 0;
   const whitespace = match[1];
-  // Assume 4 spaces or 1 tab = 1 indent level
   if (whitespace.includes('\t')) {
-    return whitespace.split('\t').length - 1;
+    return (whitespace.split('\t').length - 1) * 2;
   }
-  return Math.floor(whitespace.length / 4);
+  if (whitespace.length === 0) return 0;
+  return Math.ceil(whitespace.length / 2);
 }
 
 function parseWorkflowUtxoRef(raw: string): { workflow: BTSLInput['workflowRef']; internalUtxoParam: string } | null {
@@ -436,7 +438,8 @@ function parseInputs(lines: string[], startIdx: number, schemaParams: BTSLParam[
     if (currentIndent <= baseIndent) break;
     
     // Parse input line: INDEX: [NATIVE TYPE] @UTXO or UNLOCK SCRIPT...
-    const inputMatch = trimmed.match(/^(\d+):\s*(.+)$/);
+    // Use (.*) so a bare `0:` line is valid when `utxo:` appears indented on the next line.
+    const inputMatch = trimmed.match(/^(\d+):\s*(.*)$/);
     if (inputMatch) {
       const index = parseInt(inputMatch[1], 10);
       let rest = inputMatch[2].trim();

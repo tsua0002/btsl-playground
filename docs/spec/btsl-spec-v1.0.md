@@ -778,11 +778,14 @@ The engine executes `ASSERT` statements in numerical index order (0 to N).
 
 **Implicit Balance Check:**
 
-If a `calc` variable named `fees` is declared, the compiler MUST verify:
+If a `calc` variable named `fees` is declared, the compiler MUST verify conservation of
+satoshis using the **miner / non-output burn** amount:
 
-```
-SUM(INPUTS) == SUM(OUTPUTS) + fees
-```
+- If `fees_btc` is also declared in `calc`, verify  
+  `SUM(INPUTS) == SUM(OUTPUTS) + fees_btc`  
+  (e.g. when `fees` aggregates a maker cut that is already a transaction output).
+- Otherwise verify  
+  `SUM(INPUTS) == SUM(OUTPUTS) + fees`.
 
 This check is **implicit and non-declarable**: it MUST NOT be possible for a schema
 author to disable it via any syntax. It is executed as the final step of the `ASSERT`
@@ -1055,23 +1058,27 @@ PSBT_SCHEMA TRICOUNT:
         payment = (2 * @MEAN) - @A2 - @A3
         fees_btc = vSize(CURRENT_PSBT) * @FEE_RATE
         fees = @MAKER_FEE + fees_btc
+        fees_bob = fees / 2
+        fees_caro = fees - fees_bob
         ; Mapping the @PARAM to snake_case for use in the OUTPUTS block
         maker_fee_val = @MAKER_FEE
-        c_bob  = REF(@BOB_UTXO.amount) - (@MEAN - @A2) - (fees / 2)
-        c_caro = REF(@CARO_UTXO.amount) - (@MEAN - @A3) - (fees / 2)
+        c_bob  = REF(@BOB_UTXO.amount) - (@MEAN - @A2) - fees_bob
+        c_caro = REF(@CARO_UTXO.amount) - (@MEAN - @A3) - fees_caro
 
     ASSERT:
         0: c_bob >= DUST_LIMIT
         1: c_caro >= DUST_LIMIT
-        2: payment > 0
-        3: REF(@BOB_UTXO.amount) >= (@MEAN - @A2) + (fees / 2)
-        4: REF(@CARO_UTXO.amount) >= (@MEAN - @A3) + (fees / 2)
+        2: payment >= DUST_LIMIT
+        3: REF(@BOB_UTXO.amount) >= (@MEAN - @A2) + fees_bob
+        4: REF(@CARO_UTXO.amount) >= (@MEAN - @A3) + fees_caro
 ```
 
-> **Note on `fees`:** The variable `fees` aggregates both miner fees and the maker
-> service fee. This is intentional: the implicit balance check (§4.3.C) will verify
-> `SUM(INPUTS) == SUM(OUTPUTS) + fees`, which accounts for all satoshis leaving the
-> inputs and not reaching the visible outputs.
+> **Note on `fees`:** The variable `fees` aggregates miner fees (`fees_btc`) and the maker
+> service fee (`@MAKER_FEE`). The maker amount is also paid on a normal output (`maker_fee_val`).
+> The implicit balance check (§4.3.C) therefore uses **`fees_btc` when present**:
+> `SUM(INPUTS) == SUM(OUTPUTS) + fees_btc`. Split `fees` into `fees_bob` and `fees_caro`
+> so `fees_bob + fees_caro = fees` exactly (avoid losing 1 sat when `fees` is odd and two
+> `(fees / 2)` truncations are used).
 
 ---
 

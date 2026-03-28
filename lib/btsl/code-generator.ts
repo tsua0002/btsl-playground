@@ -1,4 +1,5 @@
 // BTSL Code Generator - Generates JavaScript for PSBT construction
+import * as bitcoin from 'bitcoinjs-lib';
 import type {
   BTSLDocument,
   BTSLSchema,
@@ -12,6 +13,7 @@ import type {
 import { DUST_LIMIT, toPayloadHex, FEE_BUDGET_VSIZE_SLACK_VB } from './types';
 import { compileScriptAsmToHex } from './script-compiler';
 import { parseMultisigMFromAsm } from './multisig-m';
+import { buildScriptOutputPkScript } from './script-output-pk';
 
 /** Precise vsize via bitcoin.Transaction.virtualSize() (real scriptPubKeys + placeholder witnesses). */
 function generatePreciseVsizeBlock(
@@ -40,7 +42,7 @@ function generatePreciseVsizeBlock(
       if (!h || h.length % 2) pb = new Uint8Array(0);
       else pb = Uint8Array.from(h.match(/.{2}/g).map((x) => parseInt(x, 16)));
     }
-    __outs.push(Buffer.concat([Buffer.from([0x6a, pb.length]), Buffer.from(pb)]));
+    __outs.push(Buffer.from(bitcoin.script.compile([bitcoin.opcodes.OP_RETURN, Buffer.from(pb)])));
   })();`
         );
       } else {
@@ -50,23 +52,19 @@ function generatePreciseVsizeBlock(
         } else {
           payloadHex = toPayloadHex(raw, false);
         }
-        const len = payloadHex.length / 2;
         outLines.push(
-          `__outs.push(Buffer.concat([Buffer.from([0x6a, ${len}]), Buffer.from("${payloadHex}", "hex")]));`
+          `__outs.push(Buffer.from(bitcoin.script.compile([bitcoin.opcodes.OP_RETURN, Buffer.from("${payloadHex}", "hex")])));`
         );
       }
     } else if (output.type === 'SCRIPT' && output.scriptDef) {
-      const def = findScriptDef(output.scriptDef);
-      if (def) {
-        try {
-          const sh = compileScriptAsmToHex(def, boundParams, output.scriptParams);
-          outLines.push(
-            `__outs.push(bitcoin.payments.p2wsh({ redeem: { output: Buffer.from("${sh}", "hex") }, network: __net }).output);`
-          );
-        } catch {
+      try {
+        const pk = buildScriptOutputPkScript(document, output, boundParams, bitcoin.networks.bitcoin);
+        if (pk && pk.length > 0) {
+          outLines.push(`__outs.push(Buffer.from("${pk.toString('hex')}", "hex"));`);
+        } else {
           outLines.push(`__outs.push(Buffer.alloc(34, 0));`);
         }
-      } else {
+      } catch {
         outLines.push(`__outs.push(Buffer.alloc(34, 0));`);
       }
     } else if (output.type === 'ADDRESS') {
@@ -154,7 +152,7 @@ function generatePreciseVsizeBlock(
   const __pm = __preciseMetrics();
   const vsize = __pm.vsize;
   const tx_weight = __pm.weight;
-  console.log('[v0] Precise vsize:', vsize, 'vB, weight:', tx_weight, 'wu');
+  console.log('[BTSL] Precise vsize:', vsize, 'vB, weight:', tx_weight, 'wu');
 `;
 }
 
@@ -310,7 +308,7 @@ export function generatePSBTCode(
       
       psbt.addInput(inputObj);
       inputValues.push(BigInt(utxoData.value));
-      console.log('[v0] Added input ${idx}:', utxoData.txid + ':' + utxoData.vout, '-', utxoData.value, 'sats');
+      console.log('[BTSL] Added input ${idx}:', utxoData.txid + ':' + utxoData.vout, '-', utxoData.value, 'sats');
     }`;
   }).join('\n');
   
@@ -333,7 +331,7 @@ export function generatePSBTCode(
       ? `Math.ceil(Number(${evalExpr}))`
       : `Math.floor(${evalExpr})`;
     return `    calcVars.${calc.variable} = ${assignRhs};
-    console.log('[v0] calc: ${calc.variable} =', calcVars.${calc.variable});`;
+    console.log('[BTSL] calc: ${calc.variable} =', calcVars.${calc.variable});`;
   }).join('\n');
   
   // Helper to resolve amount expression - handles literal numbers, consts, calc vars, and @PARAM refs
@@ -358,6 +356,7 @@ export function generatePSBTCode(
   const outputsCode = schema.outputs.map((output, idx) => {
     let addressExpr = '';
     let amountExpr = '';
+    let scriptHexEmbedded: string | null = null;
 
     switch (output.type) {
       case 'ADDRESS': {
@@ -379,10 +378,18 @@ export function generatePSBTCode(
         amountExpr = resolveAmountExpr(output);
         break;
         
-      case 'SCRIPT':
-        addressExpr = `null`; // Will use script
+      case 'SCRIPT': {
+        addressExpr = `null`;
         amountExpr = resolveAmountExpr(output);
+        const pk = buildScriptOutputPkScript(document, output, boundParams, bitcoin.networks.bitcoin);
+        if (!pk || pk.length === 0) {
+          throw new Error(
+            `BTSL_ERR_04c: Cannot compile SCRIPT output scriptDef=${output.scriptDef} for embedded code`
+          );
+        }
+        scriptHexEmbedded = pk.toString('hex');
         break;
+      }
         
       case 'OP_RETURN': {
         addressExpr = `null`;
@@ -418,11 +425,12 @@ export function generatePSBTCode(
         amount: BigInt(${amountExpr}),
         ${output.type === 'OP_RETURN' ? `payload: "${payloadHex}",` : ''}
         ${output.scriptDef ? `scriptDef: "${output.scriptDef}",` : ''}
+        ${output.type === 'SCRIPT' && scriptHexEmbedded ? `scriptHex: "${scriptHexEmbedded}",` : ''}
       }, calcVars);
       
       psbt.addOutput(outputObj);
       outputValues.push(BigInt(${amountExpr}));
-      console.log('[v0] Added output ${idx}:', ${addressExpr}, '-', ${amountExpr}, 'sats');
+      console.log('[BTSL] Added output ${idx}:', ${output.type === 'SCRIPT' ? `'SCRIPT'` : addressExpr}, '-', ${amountExpr}, 'sats');
     }`;
   }).join('\n');
   
@@ -434,7 +442,7 @@ export function generatePSBTCode(
     if (!(${evalCondition})) {
       throw new Error('BTSL_ERR_06: ASSERT ${assert.index} failed — ${assert.condition.replace(/'/g, "\\'")}');
     }
-    console.log('[v0] ASSERT ${assert.index} passed: ${assert.condition.replace(/'/g, "\\'")}');`;
+    console.log('[BTSL] ASSERT ${assert.index} passed: ${assert.condition.replace(/'/g, "\\'")}');`;
   }).join('\n');
   
   return `// ============================================================
@@ -534,11 +542,16 @@ function buildOutput(outputDef, calcVars) {
       };
     }
 
-    case 'SCRIPT':
+    case 'SCRIPT': {
+      const h = (outputDef.scriptHex || '').replace(/^0x/i, '').replace(/\s/g, '');
+      if (!h || h.length % 2 !== 0) {
+        throw new Error('BTSL_ERR_04c: SCRIPT output requires scriptHex');
+      }
       return {
-        address: outputDef.address,
+        script: Buffer.from(h, 'hex'),
         value: Number(outputDef.amount),
       };
+    }
 
     case 'OP_RETURN': {
       const payloadHex = (outputDef.payload || '').replace(/^0x/i, '').replace(/\s/g, '');
@@ -546,7 +559,9 @@ function buildOutput(outputDef, calcVars) {
         console.warn('BTSL_WARN_04: OP_RETURN payload exceeds 80 bytes');
       }
       const payloadBytes = payloadHex ? hex.decode(payloadHex) : new Uint8Array(0);
-      const opReturnScript = Buffer.from([0x6a, payloadBytes.length, ...payloadBytes]);
+      const opReturnScript = Buffer.from(
+        bitcoin.script.compile([bitcoin.opcodes.OP_RETURN, Buffer.from(payloadBytes)])
+      );
       return {
         script: opReturnScript,
         value: 0,
@@ -563,14 +578,14 @@ function buildOutput(outputDef, calcVars) {
 // ============================================================
 
 async function buildPSBT() {
-  console.log('[v0] ========================================');
-  console.log('[v0] Starting BTSL PSBT Construction');
-  console.log('[v0] Schema: ${schema.name}');
-  console.log('[v0] ========================================');
+  console.log('[BTSL] ========================================');
+  console.log('[BTSL] Starting BTSL PSBT Construction');
+  console.log('[BTSL] Schema: ${schema.name}');
+  console.log('[BTSL] ========================================');
   
   // Phase 4.1 — Initialize native PSBT (bitcoinjs-lib Psbt only)
   const psbt = new bitcoin.Psbt({ network: bitcoin.networks.bitcoin });
-  console.log('[v0] Initialized PSBT (BIP174, bitcoinjs-lib Psbt)');
+  console.log('[BTSL] Initialized PSBT (BIP174, bitcoinjs-lib Psbt)');
   
   const inputValues = [];
   const outputValues = [];
@@ -583,53 +598,53 @@ async function buildPSBT() {
       sumInputs += BigInt(param.resolved.value);
     }
   }
-  console.log('[v0] Sum of inputs:', sumInputs.toString(), 'sats');
+  console.log('[BTSL] Sum of inputs:', sumInputs.toString(), 'sats');
   
   // Phase 3 — Execute calc assignments (sequential, declaration order)
-  console.log('[v0] ----------------------------------------');
-  console.log('[v0] Phase 3 — Executing calc block');
+  console.log('[BTSL] ----------------------------------------');
+  console.log('[BTSL] Phase 3 — Executing calc block');
 ${calcCode}
   
   // Phase 4 — Build PSBT inputs
-  console.log('[v0] ----------------------------------------');
-  console.log('[v0] Phase 4 — Building PSBT inputs');
+  console.log('[BTSL] ----------------------------------------');
+  console.log('[BTSL] Phase 4 — Building PSBT inputs');
 ${inputsCode}
   
   // Phase 4 — Build PSBT outputs
-  console.log('[v0] ----------------------------------------');
-  console.log('[v0] Phase 4 — Building PSBT outputs');
+  console.log('[BTSL] ----------------------------------------');
+  console.log('[BTSL] Phase 4 — Building PSBT outputs');
 ${outputsCode}
   
   // Phase 5 — Zero-Trust Audit
-  console.log('[v0] ----------------------------------------');
-  console.log('[v0] Phase 5 — Zero-Trust Audit');
+  console.log('[BTSL] ----------------------------------------');
+  console.log('[BTSL] Phase 5 — Zero-Trust Audit');
   
   // 5.1 Balance Invariant Check
   const totalInputs = inputValues.reduce((a, b) => a + b, 0n);
   const totalOutputs = outputValues.reduce((a, b) => a + b, 0n);
   const implicitFees = totalInputs - totalOutputs;
   
-  console.log('[v0] Total inputs:', totalInputs.toString(), 'sats');
-  console.log('[v0] Total outputs:', totalOutputs.toString(), 'sats');
-  console.log('[v0] Implicit fees:', implicitFees.toString(), 'sats');
+  console.log('[BTSL] Total inputs:', totalInputs.toString(), 'sats');
+  console.log('[BTSL] Total outputs:', totalOutputs.toString(), 'sats');
+  console.log('[BTSL] Implicit fees:', implicitFees.toString(), 'sats');
   
   if (implicitFees < 0n) {
     throw new Error('BTSL_ERR_06: Balance invariant failed — outputs exceed inputs');
   }
   
   // 5.2 ASSERT Evaluation
-  console.log('[v0] Evaluating ASSERT conditions...');
+  console.log('[BTSL] Evaluating ASSERT conditions...');
 ${assertsCode}
   
   // 5.3 Dust Check
-  console.log('[v0] Checking for dust outputs...');
+  console.log('[BTSL] Checking for dust outputs...');
   for (let i = 0; i < outputValues.length; i++) {
     // Skip OP_RETURN (index can be detected by type or zero amount)
     if (outputValues[i] > 0n && outputValues[i] < BigInt(DUST_LIMIT)) {
       throw new Error(\`BTSL_ERR_07: Dust output at index \${i} — value=\${outputValues[i]}\`);
     }
   }
-  console.log('[v0] Dust check passed');
+  console.log('[BTSL] Dust check passed');
   
   // 5.4 Weight Check
   if (tx_weight > 400000) {
@@ -637,16 +652,16 @@ ${assertsCode}
   }
   
   // Phase 5.6 — Export PSBT
-  console.log('[v0] ----------------------------------------');
-  console.log('[v0] All audits passed — exporting PSBT');
+  console.log('[BTSL] ----------------------------------------');
+  console.log('[BTSL] All audits passed — exporting PSBT');
   
   const psbtBase64 = psbt.toBase64();
   const psbtHex = psbt.toHex();
   
-  console.log('[v0] ========================================');
-  console.log('[v0] PSBT Generation Complete');
-  console.log('[v0] Status: UNSIGNED — Ready for signing');
-  console.log('[v0] ========================================');
+  console.log('[BTSL] ========================================');
+  console.log('[BTSL] PSBT Generation Complete');
+  console.log('[BTSL] Status: UNSIGNED — Ready for signing');
+  console.log('[BTSL] ========================================');
   
   return {
     psbtBase64,

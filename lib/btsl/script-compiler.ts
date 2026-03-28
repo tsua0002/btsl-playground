@@ -1,7 +1,9 @@
 // Minimal Bitcoin Script compiler for BTSL SCRIPT_DEFS (P2WSH focus)
 // Scope: enough to support multisig 1-of-2 / 2-of-2 and simple scripts.
 
+import * as bitcoin from 'bitcoinjs-lib';
 import type { BTSLScriptDef, BoundParams } from './types';
+import { normalizeSecPubkeyHexToCompressed } from './pubkey-format';
 
 // Opcodes we currently support (extend as needed)
 const OPCODES: Record<string, number> = {
@@ -109,12 +111,11 @@ export function compileScriptAsmToHex(
     const pkMatch = token.match(/^<pubkey\(([A-Za-z0-9_]+)\)>$/);
     if (pkMatch) {
       const placeholder = pkMatch[1];
-      const pubkeyHex = resolvePubkeyHex(placeholder, boundParams, scriptParams);
+      const rawHex = resolvePubkeyHex(placeholder, boundParams, scriptParams);
+      const pubkeyHex = normalizeSecPubkeyHexToCompressed(rawHex);
       const pkBytes = hexToBytes(pubkeyHex);
       if (pkBytes.length !== 33) {
-        throw new Error(
-          `BTSL_ERR_04e: Pubkey ${placeholder} is not 33 bytes compressed`
-        );
+        throw new Error(`BTSL_ERR_04e: Pubkey ${placeholder} internal error: expected 33 bytes after normalize`);
       }
       encodePush(pkBytes, out);
       continue;
@@ -126,7 +127,7 @@ export function compileScriptAsmToHex(
       continue;
     }
 
-    // Numeric literals 0..16 -> OP_N
+    // Decimal literals: OP_0 / OP_1..OP_16, else minimal script-number push (e.g. CSV 100)
     if (/^\d+$/.test(token)) {
       const n = parseInt(token, 10);
       if (n === 0) {
@@ -134,9 +135,12 @@ export function compileScriptAsmToHex(
         continue;
       }
       if (n >= 1 && n <= 16) {
-        out.push(OPCODES[`OP_${n}`]);
+        out.push(OPCODES[`OP_${n}` as keyof typeof OPCODES]);
         continue;
       }
+      const enc = bitcoin.script.number.encode(n);
+      for (const b of enc) out.push(b);
+      continue;
     }
 
     // Raw hex literal (0x...)

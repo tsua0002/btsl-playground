@@ -17,7 +17,8 @@ interface SchemaInputCardProps {
   onParsed: (result: ParseResult) => void;
   disabled?: boolean;
   activeExampleId?: string | null;
-  onExampleSelected?: (id: string) => void;
+  /** `null` when the user edits the schema manually or uploads a file — clears catalog example tracking */
+  onExampleSelected?: (id: string | null) => void;
 }
 
 export function SchemaInputCard({ onParsed, disabled, activeExampleId, onExampleSelected }: SchemaInputCardProps) {
@@ -36,7 +37,8 @@ export function SchemaInputCard({ onParsed, disabled, activeExampleId, onExample
   const setCustomMode = useCallback(() => {
     setMode('custom');
     setOpenCategoryId(undefined);
-  }, []);
+    onExampleSelected?.(null);
+  }, [onExampleSelected]);
 
   const handleParse = useCallback(() => {
     if (!schema.trim()) return;
@@ -91,6 +93,12 @@ export function SchemaInputCard({ onParsed, disabled, activeExampleId, onExample
                 behavior: 'smooth',
                 block: 'start',
               });
+              window.setTimeout(() => {
+                document.getElementById('btsl-params-load-section')?.scrollIntoView({
+                  behavior: 'smooth',
+                  block: 'start',
+                });
+              }, 400);
             });
           }
         } catch (error) {
@@ -135,6 +143,9 @@ export function SchemaInputCard({ onParsed, disabled, activeExampleId, onExample
       const content = e.target?.result as string;
       setSchema(content);
       setParseResult(null);
+      setMode('custom');
+      setOpenCategoryId(undefined);
+      onExampleSelected?.(null);
     };
     reader.readAsText(file);
   }, []);
@@ -214,8 +225,11 @@ export function SchemaInputCard({ onParsed, disabled, activeExampleId, onExample
                 <XCircle className="h-4 w-4" />
                 <AlertTitle>{error.code}</AlertTitle>
                 <AlertDescription>
-                  {ERROR_CODES[error.code] || error.message}
-                  {error.line && <span className="ml-2 text-xs">(line {error.line})</span>}
+                  <span className="block font-medium text-foreground">{error.message}</span>
+                  {ERROR_CODES[error.code] && ERROR_CODES[error.code] !== error.message && (
+                    <span className="mt-1 block text-xs opacity-90">{ERROR_CODES[error.code]}</span>
+                  )}
+                  {error.line && <span className="mt-1 block text-xs">Line {error.line}</span>}
                 </AlertDescription>
               </Alert>
             ))}

@@ -31,11 +31,21 @@ interface PSBTOutputCardProps {
   workflowContext?: WorkflowContext;
   onSetTxid?: (schemaName: string, txid: string) => void;
   disabled?: boolean;
+  /** When true, show txid capture for multi-step workflows (schema uses DEPENDS_ON). */
+  showWorkflowStep?: boolean;
   /** Blockchain explorer link template with {txid} placeholder */
   explorerLinkTemplate?: string;
 }
 
-export function PSBTOutputCard({ result, schemaName, workflowContext, onSetTxid, disabled, explorerLinkTemplate }: PSBTOutputCardProps) {
+export function PSBTOutputCard({
+  result,
+  schemaName,
+  workflowContext,
+  onSetTxid,
+  disabled,
+  showWorkflowStep = false,
+  explorerLinkTemplate,
+}: PSBTOutputCardProps) {
   const [copiedBase64, setCopiedBase64] = useState(false);
   const [copiedHex, setCopiedHex] = useState(false);
   const [txidDraft, setTxidDraft] = useState('');
@@ -128,7 +138,7 @@ export function PSBTOutputCard({ result, schemaName, workflowContext, onSetTxid,
           </AlertDescription>
         </Alert>
 
-        {schemaName && (
+        {schemaName && showWorkflowStep && (
           <div className="rounded-lg border p-4 space-y-3">
             <div className="flex items-center justify-between gap-3">
               <div>
@@ -171,8 +181,11 @@ export function PSBTOutputCard({ result, schemaName, workflowContext, onSetTxid,
                 </Button>
               </div>
               <div className="flex items-center gap-2 text-xs text-muted-foreground flex-wrap">
-                <span>Child schemas with <span className="font-mono">DEPENDS_ON</span> will unlock once the parent txid is saved.</span>
-                {explorerLinkTemplate && txidDraft.trim().length === 64 && (
+                <span>
+                  Child schemas with <span className="font-mono">DEPENDS_ON</span> will unlock once the parent txid is
+                  saved.
+                </span>
+                {explorerLinkTemplate && /^[0-9a-fA-F]{64}$/.test(txidDraft.trim()) && (
                   <a
                     href={explorerLinkTemplate.replace('{txid}', txidDraft.trim())}
                     target="_blank"
@@ -281,19 +294,26 @@ export function PSBTOutputCard({ result, schemaName, workflowContext, onSetTxid,
               <AccordionTrigger>
                 <span className="flex items-center gap-2">
                   SeedSigner / Air-Gap QR Devices
-                  <span className="ml-1 text-xs text-muted-foreground font-normal">(recommended for cold storage)</span>
+                  <span className="ml-1 text-xs text-muted-foreground font-normal">
+                    (recommended for cold storage)
+                  </span>
                 </span>
               </AccordionTrigger>
               <AccordionContent>
                 <ol className="list-decimal ml-4 space-y-1.5 text-sm">
-                  <li>Click <strong>QR Code</strong> on the Base64 tab above to show the PSBT as a scannable QR code.</li>
-                  <li>On your SeedSigner: navigate to <span className="font-mono">Sign → PSBT</span> and scan the QR.</li>
+                  <li>
+                    Click <strong>QR Code</strong> on the Base64 tab above to show the PSBT as a scannable QR code.
+                  </li>
+                  <li>
+                    On your SeedSigner: navigate to <span className="font-mono">Sign → PSBT</span> and scan the QR.
+                  </li>
                   <li>SeedSigner will show transaction details — verify the outputs and fee carefully.</li>
                   <li>Approve the signing. SeedSigner will display a signed PSBT as a QR code.</li>
                   <li>Scan the signed QR back into a coordinator (Sparrow, Specter) and broadcast.</li>
                 </ol>
                 <p className="text-xs text-muted-foreground mt-2">
-                  For large PSBTs, use Sparrow as an intermediary coordinator which supports animated QR / UR encoding for Coldcard and SeedSigner.
+                  For large PSBTs, use Sparrow as an intermediary coordinator which supports animated QR / UR encoding for
+                  Coldcard and SeedSigner.
                 </p>
               </AccordionContent>
             </AccordionItem>

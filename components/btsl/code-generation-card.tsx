@@ -13,14 +13,25 @@ import {
   ERROR_CODES,
   WARNING_CODES,
   toPayloadHex,
-  FEE_BUDGET_VSIZE_SLACK_VB,
 } from '@/lib/btsl/types';
+import {
+  buildConsts,
+  collectInputValues,
+  runCalcBlock,
+  evaluateAsserts,
+  checkImplicitBalance,
+  checkDustOutputs,
+  logWeightWarning,
+  computeOutputAmounts,
+} from '@/lib/btsl/runtime-expr';
 import { generatePSBTCode } from '@/lib/btsl/code-generator';
 import { compileScriptAsmToHex } from '@/lib/btsl/script-compiler';
 import {
   buildOutputScriptsForPreciseVsize,
   computePreciseTxMetrics,
 } from '@/lib/btsl/precise-weight';
+import { buildOpReturnScript } from '@/lib/btsl/op-return-script';
+import { buildScriptOutputPkScript } from '@/lib/btsl/script-output-pk';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneLight } from 'react-syntax-highlighter/dist/cjs/styles/prism';
 
@@ -148,7 +159,7 @@ export function CodeGenerationCard({ document, boundParams, workflowContext, sch
         success: false,
         error: {
           code: errorCode,
-          message: ERROR_CODES[errorCode] || errorMsg
+          message: errorMsg,
         },
         logs
       });
@@ -297,7 +308,7 @@ export function CodeGenerationCard({ document, boundParams, workflowContext, sch
                       className={`py-0.5 ${
                         log.includes('[ERROR]') ? 'text-red-400' :
                         log.includes('[WARN]') ? 'text-yellow-400' :
-                        log.startsWith('[v0]') ? 'text-green-400' :
+                        log.startsWith('[BTSL]') ? 'text-green-400' :
                         'text-slate-300'
                       }`}
                     >
@@ -314,7 +325,13 @@ export function CodeGenerationCard({ document, boundParams, workflowContext, sch
                 <XCircle className="h-4 w-4" />
                 <AlertTitle>{executionResult.error.code}</AlertTitle>
                 <AlertDescription>
-                  {ERROR_CODES[executionResult.error.code] || executionResult.error.message}
+                  <span className="block font-medium text-foreground">{executionResult.error.message}</span>
+                  {ERROR_CODES[executionResult.error.code] &&
+                    ERROR_CODES[executionResult.error.code] !== executionResult.error.message && (
+                      <span className="mt-1 block text-xs opacity-90">
+                        {ERROR_CODES[executionResult.error.code]}
+                      </span>
+                    )}
                 </AlertDescription>
               </Alert>
             )}
@@ -354,10 +371,10 @@ async function simulatePSBTGeneration(
     throw new Error('BTSL_ERR_00: No schema found');
   }
 
-  logs.push('[v0] ========================================');
-  logs.push('[v0] Starting BTSL PSBT Construction');
-  logs.push(`[v0] Schema: ${schema.name}`);
-  logs.push('[v0] ========================================');
+  logs.push('[BTSL] ========================================');
+  logs.push('[BTSL] Starting BTSL PSBT Construction');
+  logs.push(`[BTSL] Schema: ${schema.name}`);
+  logs.push('[BTSL] ========================================');
 
   const constsMapForWeight: Record<string, number | string> = {};
   for (const c of document.consts) {
@@ -391,371 +408,90 @@ async function simulatePSBTGeneration(
     document,
     boundParams
   );
-  logs.push(`[v0] Precise vsize (BIP-141 template tx): ${vsize} vB, weight ${txWeightWu} wu`);
+  logs.push(`[BTSL] Precise vsize (BIP-141 template tx): ${vsize} vB, weight ${txWeightWu} wu`);
 
-  // Calculate sum of inputs
-  let sumInputs = BigInt(0);
-  const inputValues: bigint[] = [];
-  
+  const inputValues = collectInputValues(schema, boundParams);
+  const sumInputs = inputValues.reduce((a, b) => a + b, BigInt(0));
   for (const input of schema.inputs) {
     const paramName = input.utxoRef.replace(/^@/, '');
     const param = boundParams[paramName];
     if (param?.resolved && typeof param.resolved === 'object' && 'value' in param.resolved) {
-      const value = BigInt(param.resolved.value);
-      sumInputs += value;
-      inputValues.push(value);
-      logs.push(`[v0] Input ${input.index}: ${param.resolved.txid}:${param.resolved.vout} - ${value} sats`);
+      const r = param.resolved as { txid: string; vout: number; value: number };
+      logs.push(`[BTSL] Input ${input.index}: ${r.txid}:${r.vout} - ${r.value} sats`);
     }
   }
+  logs.push(`[BTSL] Sum of inputs: ${sumInputs} sats`);
 
-  logs.push(`[v0] Sum of inputs: ${sumInputs} sats`);
+  logs.push('[BTSL] ----------------------------------------');
+  logs.push('[BTSL] Phase 3 — Executing calc block');
 
-  // Execute calc
-  logs.push('[v0] ----------------------------------------');
-  logs.push('[v0] Phase 3 — Executing calc block');
+  const logSink = { push: (s: string) => logs.push(s) };
+  const consts = buildConsts(document, schema);
 
-  const calcVars: Record<string, bigint> = {};
-  const consts: Record<string, bigint | string> = {
-    DUST_LIMIT: BigInt(546)
-  };
-
-  for (const c of document.consts) {
-    consts[c.name] = typeof c.value === 'number' ? BigInt(c.value) : c.value;
-  }
-  for (const c of schema.consts ?? []) {
-    consts[c.name] = typeof c.value === 'number' ? BigInt(c.value) : c.value;
-  }
-
-  const utxoAliases = schema.inputs.map((i) => i.utxoAlias).filter(Boolean) as string[];
-
-  const getParamValue = (ref: string): bigint => {
-    if (ref.startsWith('@')) {
-      const parts = ref.slice(1).split('.');
-      const paramName = parts[0];
-      const prop = parts[1];
-      const param = boundParams[paramName];
-      
-      if (prop === 'amount' && param?.resolved && typeof param.resolved === 'object' && 'value' in param.resolved) {
-        return BigInt(param.resolved.value);
-      }
-      
-      if (typeof param?.resolved === 'number') {
-        return BigInt(param.resolved);
-      }
-      
-      return BigInt(0);
-    }
-    return BigInt(0);
-  };
-
-  // Tokenize expression into numbers and operators
-  const tokenize = (expr: string): (bigint | string)[] => {
-    const tokens: (bigint | string)[] = [];
-    let i = 0;
-    const s = expr.trim();
-    
-    while (i < s.length) {
-      // Skip whitespace
-      while (i < s.length && /\s/.test(s[i])) i++;
-      if (i >= s.length) break;
-      
-      const char = s[i];
-      
-      // Parentheses
-      if (char === '(' || char === ')') {
-        tokens.push(char);
-        i++;
-        continue;
-      }
-      
-      // Operators
-      if (['+', '*', '/'].includes(char)) {
-        tokens.push(char);
-        i++;
-        continue;
-      }
-      
-      // Handle minus - could be negative number or subtraction
-      if (char === '-') {
-        // It's a negative number if at start, after operator, or after open paren
-        const lastToken = tokens[tokens.length - 1];
-        if (tokens.length === 0 || lastToken === '(' || ['+', '-', '*', '/'].includes(lastToken as string)) {
-          // Negative number
-          i++;
-          let numStr = '-';
-          while (i < s.length && /\d/.test(s[i])) {
-            numStr += s[i];
-            i++;
-          }
-          tokens.push(BigInt(numStr));
-        } else {
-          // Subtraction operator
-          tokens.push('-');
-          i++;
-        }
-        continue;
-      }
-      
-      // Numbers
-      if (/\d/.test(char)) {
-        let numStr = '';
-        while (i < s.length && /\d/.test(s[i])) {
-          numStr += s[i];
-          i++;
-        }
-        tokens.push(BigInt(numStr));
-        continue;
-      }
-      
-      // Unknown character - skip
-      i++;
-    }
-    
-    return tokens;
-  };
-  
-  // Recursive descent parser for arithmetic
-  const parseExpr = (tokens: (bigint | string)[], pos: { i: number }): bigint => {
-    let left = parseTerm(tokens, pos);
-    
-    while (pos.i < tokens.length) {
-      const op = tokens[pos.i];
-      if (op !== '+' && op !== '-') break;
-      pos.i++;
-      const right = parseTerm(tokens, pos);
-      if (op === '+') left = left + right;
-      else left = left - right;
-    }
-    
-    return left;
-  };
-  
-  const parseTerm = (tokens: (bigint | string)[], pos: { i: number }): bigint => {
-    let left = parseFactor(tokens, pos);
-    
-    while (pos.i < tokens.length) {
-      const op = tokens[pos.i];
-      if (op !== '*' && op !== '/') break;
-      pos.i++;
-      const right = parseFactor(tokens, pos);
-      if (op === '*') left = left * right;
-      else {
-        if (right === BigInt(0)) throw new Error('BTSL_ERR_08: Division by zero');
-        left = left / right;
-      }
-    }
-    
-    return left;
-  };
-  
-  const parseFactor = (tokens: (bigint | string)[], pos: { i: number }): bigint => {
-    const token = tokens[pos.i];
-    
-    if (token === '(') {
-      pos.i++;
-      const result = parseExpr(tokens, pos);
-      if (tokens[pos.i] === ')') pos.i++;
-      return result;
-    }
-    
-    if (typeof token === 'bigint') {
-      pos.i++;
-      return token;
-    }
-    
-    // Should not reach here
-    throw new Error(`Unexpected token: ${token}`);
-  };
-  
-  // Expression evaluator: fee line uses vsize+slack; ASSERT uses exact vsize
-  const evalExpr = (
-    expr: string,
-    opts?: { calcAssignVar?: string; forAssert?: boolean }
-  ): bigint => {
-    let result = expr;
-    const vs =
-      opts?.forAssert === true
-        ? vsize
-        : opts?.calcAssignVar === 'fees'
-          ? vsize + FEE_BUDGET_VSIZE_SLACK_VB
-          : vsize;
-
-    // UTXO alias refs (From(@X) AS alias)
-    for (const alias of utxoAliases) {
-      const resolved = boundParams[alias]?.resolved;
-      const value = typeof resolved === 'object' && resolved !== null && 'value' in resolved
-        ? String((resolved as { value: number }).value)
-        : '0';
-      result = result.replace(new RegExp(`\\b${alias}\\.amount\\b`, 'g'), value);
-    }
-
-    // Replace constants (numeric only for expression; string consts left for display)
-    for (const [name, value] of Object.entries(consts)) {
-      if (typeof value === 'bigint' || typeof value === 'number') {
-        result = result.replace(new RegExp(`\\b${name}\\b`, 'g'), String(value));
-      }
-    }
-
-    for (const [name, value] of Object.entries(calcVars)) {
-      result = result.replace(new RegExp(`\\b${name}\\b`, 'g'), value.toString());
-    }
-
-    result = result.replace(/vSize\(CURRENT_PSBT\)/g, vs.toString());
-
-    result = result.replace(/REF\((@[A-Z][A-Za-z0-9_]*\.[a-z]+)\)/g, (_, ref) => {
-      return getParamValue(ref).toString();
+  let calcVars: Record<string, bigint>;
+  try {
+    calcVars = runCalcBlock(schema, document, boundParams, workflowContext, vsize, inputValues, {
+      logs: logSink,
     });
-
-    result = result.replace(/REF\(([A-Z][A-Za-z0-9_]*):(\d+)\.amount\)/g, (_, sName, idx) => {
-      const v = workflowContext?.steps?.[String(sName)]?.outputs?.[Number(idx)]?.valueSats;
-      return String(v ?? '0');
-    });
-    result = result.replace(/([A-Z][A-Za-z0-9_]*):(\d+)\.amount\b/g, (_, sName, idx) => {
-      const v = workflowContext?.steps?.[String(sName)]?.outputs?.[Number(idx)]?.valueSats;
-      return String(v ?? '0');
-    });
-
-    result = result.replace(/@([A-Z][A-Za-z0-9_]*)\.([a-z]+)/g, (_, name, prop) => {
-      return getParamValue(`@${name}.${prop}`).toString();
-    });
-    result = result.replace(/@([A-Z][A-Za-z0-9_]*)/g, (_, name) => {
-      const param = boundParams[name];
-      if (typeof param?.resolved === 'number') {
-        return param.resolved.toString();
-      }
-      return '0';
-    });
-
-    // Now parse and evaluate
-    try {
-      const tokens = tokenize(result);
-      if (tokens.length === 0) return BigInt(0);
-      const parsed = parseExpr(tokens, { i: 0 });
-      return parsed;
-    } catch (e) {
-      if (e instanceof Error && e.message.startsWith('BTSL_ERR')) {
-        throw e;
-      }
-      logs.push(`[v0] Expression eval error: ${expr} -> ${result} (${e})`);
-      return BigInt(0);
-    }
-  };
-
-  // Execute calc assignments
-  for (const calc of schema.calc) {
-    try {
-      let v = evalExpr(calc.expression, { calcAssignVar: calc.variable });
-      if (calc.variable === 'fees') {
-        v = BigInt(Math.ceil(Number(v)));
-      }
-      calcVars[calc.variable] = v;
-      logs.push(`[v0] calc: ${calc.variable} = ${calcVars[calc.variable]}`);
-    } catch (e) {
-      logs.push(`[v0] calc error for ${calc.variable}: ${e}`);
-      throw e;
-    }
+  } catch (e) {
+    logs.push(`[BTSL] calc error: ${e}`);
+    throw e;
   }
 
-  // Calculate outputs
-  logs.push('[v0] ----------------------------------------');
-  logs.push('[v0] Phase 4 — Building outputs');
-
-  const outputValues: bigint[] = [];
+  logs.push('[BTSL] ----------------------------------------');
+  logs.push('[BTSL] Phase 4 — Building outputs');
+  const outputValues = computeOutputAmounts(schema, consts, boundParams, calcVars);
   for (const output of schema.outputs) {
-    let amount = BigInt(0);
-
-    if (output.type === 'OP_RETURN') {
-      amount = BigInt(0);
-    } else if (output.amountVar) {
-      if (output.amountVar.startsWith('@')) {
-        const paramName = output.amountVar.slice(1);
-        const param = boundParams[paramName];
-        if (typeof param?.resolved === 'number') {
-          amount = BigInt(param.resolved);
-        }
-      } else if (consts[output.amountVar] !== undefined && typeof consts[output.amountVar] !== 'string') {
-        amount = BigInt(consts[output.amountVar] as bigint);
-      } else if (calcVars[output.amountVar] !== undefined) {
-        amount = calcVars[output.amountVar];
-      }
-    } else if (output.amount !== undefined) {
-      amount = BigInt(output.amount);
-    }
-
-    outputValues.push(amount);
-    
+    const amt = outputValues[output.index] ?? BigInt(0);
     const addrDisplay = output.address || output.type;
-    logs.push(`[v0] Output ${output.index}: ${addrDisplay} - ${amount} sats`);
+    logs.push(`[BTSL] Output ${output.index}: ${addrDisplay} - ${amt} sats`);
   }
 
-  // Phase 5 - Audit
-  logs.push('[v0] ----------------------------------------');
-  logs.push('[v0] Phase 5 — Zero-Trust Audit');
+  logs.push('[BTSL] ----------------------------------------');
+  logs.push('[BTSL] Phase 5 — Validation (pre-PSBT)');
 
   const totalInputs = inputValues.reduce((a, b) => a + b, BigInt(0));
   const totalOutputs = outputValues.reduce((a, b) => a + b, BigInt(0));
+  logs.push(`[BTSL] Total inputs: ${totalInputs} sats`);
+  logs.push(`[BTSL] Total outputs: ${totalOutputs} sats`);
+
+  if (!('fees' in calcVars) && totalOutputs > totalInputs) {
+    throw new Error('BTSL_ERR_06: Outputs exceed inputs (no `fees` in calc for implicit balance)');
+  }
+
+  try {
+    evaluateAsserts(schema, document, boundParams, workflowContext, vsize, inputValues, calcVars, {
+      logs: logSink,
+    });
+  } catch (e) {
+    throw e;
+  }
+
+  try {
+    checkImplicitBalance(totalInputs, totalOutputs, calcVars, logSink);
+  } catch (e) {
+    throw e;
+  }
+
+  const dustLimit =
+    typeof consts.DUST_LIMIT === 'bigint' ? consts.DUST_LIMIT : BigInt(Number(consts.DUST_LIMIT));
+  try {
+    checkDustOutputs(schema, outputValues, dustLimit, logSink);
+  } catch (e) {
+    throw e;
+  }
+
+  logWeightWarning(txWeightWu, logSink);
+
   const implicitFees = totalInputs - totalOutputs;
 
-  logs.push(`[v0] Total inputs: ${totalInputs} sats`);
-  logs.push(`[v0] Total outputs: ${totalOutputs} sats`);
-  logs.push(`[v0] Implicit fees: ${implicitFees} sats`);
-
-  if (implicitFees < BigInt(0)) {
-    throw new Error('BTSL_ERR_06: Balance invariant failed — outputs exceed inputs');
-  }
-
-  // Evaluate asserts
-  logs.push('[v0] Evaluating ASSERT conditions...');
-  
-  for (const assert of schema.asserts) {
-    const conditionStr = assert.condition;
-    
-    // Parse comparison operators
-    const compMatch = conditionStr.match(/(.+?)\s*(>=|<=|==|!=|>|<)\s*(.+)/);
-    if (compMatch) {
-      const left = evalExpr(compMatch[1].trim(), { forAssert: true });
-      const op = compMatch[2];
-      const right = evalExpr(compMatch[3].trim(), { forAssert: true });
-      
-      let passed = false;
-      switch (op) {
-        case '>=': passed = left >= right; break;
-        case '<=': passed = left <= right; break;
-        case '==': passed = left === right; break;
-        case '!=': passed = left !== right; break;
-        case '>': passed = left > right; break;
-        case '<': passed = left < right; break;
-      }
-      
-      if (!passed) {
-        throw new Error(`BTSL_ERR_06: ASSERT ${assert.index} failed — ${assert.condition}`);
-      }
-      
-      logs.push(`[v0] ASSERT ${assert.index} passed: ${assert.condition}`);
-    }
-  }
-
-  // Dust check
-  logs.push('[v0] Checking for dust outputs...');
-  for (let i = 0; i < outputValues.length; i++) {
-    if (outputValues[i] > BigInt(0) && outputValues[i] < BigInt(consts.DUST_LIMIT)) {
-      throw new Error(`BTSL_ERR_07: Dust output at index ${i} — value=${outputValues[i]}`);
-    }
-  }
-  logs.push('[v0] Dust check passed');
-
-  // Weight check
-  if (txWeightWu > 400000) {
-    logs.push('[v0] BTSL_WARN_04: Transaction exceeds standard relay weight');
-  }
-
-  logs.push('[v0] ========================================');
-  logs.push('[v0] All audits passed');
-  logs.push('[v0] Status: UNSIGNED — Ready for signing');
-  logs.push('[v0] ========================================');
+  logs.push('[BTSL] ========================================');
+  logs.push('[BTSL] All audits passed');
+  logs.push('[BTSL] Status: UNSIGNED — Ready for signing');
+  logs.push('[BTSL] ========================================');
 
   // Build actual PSBT using bitcoinjs-lib (same as generated code — Psbt + witnessScript)
-  logs.push('[v0] Building PSBT (bitcoinjs-lib)...');
+  logs.push('[BTSL] Building PSBT (bitcoinjs-lib)...');
 
   const { Buffer } = await import('buffer');
 
@@ -779,7 +515,7 @@ async function simulatePSBTGeneration(
       }
     }
   }
-  logs.push(`[v0] Network detected: ${isTestnet ? 'TESTNET' : 'MAINNET'}`);
+  logs.push(`[BTSL] Network detected: ${isTestnet ? 'TESTNET' : 'MAINNET'}`);
 
   const network = isTestnet ? bitcoin.networks.testnet : bitcoin.networks.bitcoin;
   const psbt = new bitcoin.Psbt({ network });
@@ -798,7 +534,7 @@ async function simulatePSBTGeneration(
         const scriptBuf = bitcoin.address.toOutputScript(addr, network);
         scriptPubKeyHex = Buffer.from(scriptBuf).toString('hex');
       } catch (e) {
-        logs.push(`[v0] Warning: Could not get scriptPubKey for input ${utxo.txid}:${utxo.vout}: ${e}`);
+        logs.push(`[BTSL] Warning: Could not get scriptPubKey for input ${utxo.txid}:${utxo.vout}: ${e}`);
       }
     }
     if (!scriptPubKeyHex) {
@@ -827,15 +563,15 @@ async function simulatePSBTGeneration(
         try {
           const witnessScriptHex = compileScriptAsmToHex(scriptDef, boundParams, input.scriptParams);
           inputDesc.witnessScript = new Uint8Array(Buffer.from(witnessScriptHex, 'hex'));
-          logs.push(`[v0] Added witnessScript for input (${input.scriptDef})`);
+          logs.push(`[BTSL] Added witnessScript for input (${input.scriptDef})`);
         } catch (e) {
-          logs.push(`[v0] Warning: Could not compile witness script ${input.scriptDef}: ${e}`);
+          logs.push(`[BTSL] Warning: Could not compile witness script ${input.scriptDef}: ${e}`);
         }
       }
     }
 
     psbt.addInput(inputDesc);
-    logs.push(`[v0] Added input: ${utxo.txid}:${utxo.vout}`);
+    logs.push(`[BTSL] Added input: ${utxo.txid}:${utxo.vout}`);
   }
   
   // Add outputs (value in sats, same as generated buildOutput)
@@ -858,11 +594,19 @@ async function simulatePSBTGeneration(
       }
       const payloadBytes = Buffer.from(payloadHex, 'hex');
       if (payloadBytes.length > 80) {
-        logs.push('[v0] BTSL_WARN_04: OP_RETURN payload exceeds 80 bytes');
+        logs.push('[BTSL] BTSL_WARN_04: OP_RETURN payload exceeds 80 bytes');
       }
-      const opReturnScript = Buffer.concat([Buffer.from([0x6a, payloadBytes.length]), payloadBytes]);
+      const opReturnScript = buildOpReturnScript(payloadBytes);
       psbt.addOutput({ script: opReturnScript, value: BigInt(0) });
-      logs.push('[v0] Added OP_RETURN output');
+      logs.push('[BTSL] Added OP_RETURN output');
+    } else if (output.type === 'SCRIPT' && output.scriptDef) {
+      const scriptPk = buildScriptOutputPkScript(document, output, boundParams, network);
+      if (scriptPk && amount > BigInt(0)) {
+        psbt.addOutput({ script: scriptPk, value: amount });
+        logs.push(`[BTSL] Added output ${i}: SCRIPT ${output.scriptDef} - ${amount} sats`);
+      } else if (amount > BigInt(0)) {
+        logs.push(`[BTSL] Warning: Output ${i} SCRIPT ${output.scriptDef} — could not build scriptPubKey`);
+      }
     } else {
       let address: string | undefined;
       if (output.address?.startsWith('@')) {
@@ -885,16 +629,16 @@ async function simulatePSBTGeneration(
       }
       if (address && amount > BigInt(0)) {
         psbt.addOutput({ address, value: amount });
-        logs.push(`[v0] Added output ${i}: ${address.slice(0, 20)}... - ${amount} sats`);
+        logs.push(`[BTSL] Added output ${i}: ${address.slice(0, 20)}... - ${amount} sats`);
       } else if (amount > BigInt(0)) {
-        logs.push(`[v0] Warning: Output ${i} has amount ${amount} but no address`);
+        logs.push(`[BTSL] Warning: Output ${i} has amount ${amount} but no address`);
       }
     }
   }
 
   const psbtBase64 = psbt.toBase64();
   const psbtHex = psbt.toHex();
-  logs.push('[v0] PSBT created successfully (bitcoinjs-lib)');
+  logs.push('[BTSL] PSBT created successfully (bitcoinjs-lib)');
 
   return {
     success: true,

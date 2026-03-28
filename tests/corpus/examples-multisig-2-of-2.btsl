@@ -2,6 +2,9 @@
 ; Asm + witness_data: spec §6.2 placeholders (upstream template uses empty witness / minimal asm)
 VERSION: 1
 
+CONST:
+    DUST_LIMIT = 546
+
 SCRIPT_DEFS:
     MULTISIG_2_2 P2WSH:
         asm: OP_2 <pubkey(PK1)> <pubkey(PK2)> OP_2 OP_CHECKMULTISIG

@@ -1,0 +1,12 @@
+[package]
+name = "multisig-block-scan"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bitcoin = { version = "0.32", default-features = false, features = ["std"] }
+bitcoincore-rpc = "0.19"
+
+[profile.release]
+codegen-units = 1
+lto = true

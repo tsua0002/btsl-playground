@@ -17,8 +17,9 @@ const FEATURES = [
   },
   {
     icon: <Zap className="h-4 w-4 text-yellow-500" />,
-    title: '4-Step Visual Pipeline',
-    description: 'Parse schema → bind parameters → generate code → export PSBT. See every step clearly.',
+    title: '4-Step Maker pipeline',
+    description:
+      '1) Schema 2) PARAMS 3) Generate code 4) Export an unsigned PSBT. Optional: Validator tab replays calc and ASSERT on a pasted PSBT.',
   },
   {
     icon: <QrCode className="h-4 w-4 text-blue-500" />,
@@ -55,10 +56,18 @@ export function WelcomeBanner({ onDismiss }: WelcomeBannerProps) {
           </Badge>
         </div>
         <p className="text-sm text-muted-foreground leading-relaxed max-w-2xl">
-          BTSL Schema Playground compiles human-readable transaction schemas into{' '}
-          <strong>PSBTs</strong> (Partially Signed Bitcoin Transactions). Pick an example below to
-          see the full workflow — from schema definition to a signed, broadcastable transaction.
+          BTSL Schema Playground compiles schemas into <strong>unsigned PSBTs</strong> (BIP-174). Pick an example,
+          load the demo <strong>PARAMS</strong> fixture, confirm, then generate — you get base64/hex and QR for cold signing.
+          Sign in your wallet or hardware device, broadcast when ready. Use the <strong>Validator</strong> tab with the same
+          schema and PARAMS to audit a pasted PSBT against the chain.
         </p>
+
+        <ol className="list-decimal pl-5 text-sm text-muted-foreground space-y-1 max-w-2xl">
+          <li>Choose an example schema (or paste your own BTSL).</li>
+          <li>Load demo PARAMS or your <span className="font-mono text-xs">.params</span> file, then Confirm.</li>
+          <li>Run code generation and copy or scan the PSBT export.</li>
+          <li>Optional: open Validator and paste the PSBT to replay checks.</li>
+        </ol>
       </div>
 
       {expanded && (

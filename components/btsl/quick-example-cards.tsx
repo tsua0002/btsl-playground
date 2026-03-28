@@ -1,6 +1,5 @@
 'use client';
 
-import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { ArrowRight, Zap } from 'lucide-react';
 import { EXAMPLES_CATALOG } from '@/lib/btsl/examples-catalog';
@@ -9,6 +8,8 @@ import type { ExampleDefinition } from '@/lib/btsl/examples-catalog';
 interface QuickExampleCardsProps {
   onSelectExample: (example: ExampleDefinition) => void;
   activeExampleId?: string | null;
+  /** When false, only the card grid is shown (e.g. collapsible header lives on the parent). Default true. */
+  showSectionHeader?: boolean;
 }
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -27,18 +28,26 @@ const CATEGORY_COLORS: Record<string, string> = {
   taproot_vault: 'bg-rose-100 text-rose-700 border-rose-200',
 };
 
-export function QuickExampleCards({ onSelectExample, activeExampleId }: QuickExampleCardsProps) {
+export function QuickExampleCards({
+  onSelectExample,
+  activeExampleId,
+  showSectionHeader = true,
+}: QuickExampleCardsProps) {
   const featured = EXAMPLES_CATALOG.filter((e) =>
     ['simple_payment', 'multisig_2_of_2', 'op_return_deploy', 'taproot_vault', 'tri_count'].includes(e.id)
   );
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-2">
-        <Zap className="h-4 w-4 text-primary" />
-        <h2 className="text-base font-semibold">Quick Start — Pick an Example</h2>
-        <span className="text-sm text-muted-foreground">Click any card to load it instantly</span>
-      </div>
+      {showSectionHeader ? (
+        <div className="flex flex-col gap-1 sm:flex-row sm:flex-wrap sm:items-center sm:gap-2">
+          <div className="flex items-center gap-2">
+            <Zap className="h-4 w-4 text-primary" />
+            <h2 className="text-base font-semibold">Quick Start — Pick an Example</h2>
+          </div>
+          <span className="text-sm text-muted-foreground">Click any card to load the schema and jump to parameters</span>
+        </div>
+      ) : null}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
         {featured.map((example) => {

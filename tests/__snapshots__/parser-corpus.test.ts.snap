@@ -3,7 +3,12 @@
 exports[`BTSL parser corpus > examples-multisig-2-of-2.btsl matches snapshot 1`] = `
 {
   "document": {
-    "consts": [],
+    "consts": [
+      {
+        "name": "DUST_LIMIT",
+        "value": 546,
+      },
+    ],
     "schemas": [
       {
         "asserts": [
@@ -525,19 +530,19 @@ exports[`BTSL parser corpus > examples-tri-count-shared-payment.btsl matches sna
             "source": "1: c_caro >= DUST_LIMIT",
           },
           {
-            "condition": "payment > 0",
+            "condition": "payment >= DUST_LIMIT",
             "index": 2,
-            "source": "2: payment > 0",
+            "source": "2: payment >= DUST_LIMIT",
           },
           {
-            "condition": "REF(@BOB_UTXO.amount) >= (@MEAN - @A2) + (fees / 2)",
+            "condition": "REF(@BOB_UTXO.amount) >= (@MEAN - @A2) + fees_bob",
             "index": 3,
-            "source": "3: REF(@BOB_UTXO.amount) >= (@MEAN - @A2) + (fees / 2)",
+            "source": "3: REF(@BOB_UTXO.amount) >= (@MEAN - @A2) + fees_bob",
           },
           {
-            "condition": "REF(@CARO_UTXO.amount) >= (@MEAN - @A3) + (fees / 2)",
+            "condition": "REF(@CARO_UTXO.amount) >= (@MEAN - @A3) + fees_caro",
             "index": 4,
-            "source": "4: REF(@CARO_UTXO.amount) >= (@MEAN - @A3) + (fees / 2)",
+            "source": "4: REF(@CARO_UTXO.amount) >= (@MEAN - @A3) + fees_caro",
           },
         ],
         "calc": [
@@ -554,19 +559,36 @@ exports[`BTSL parser corpus > examples-tri-count-shared-payment.btsl matches sna
             "variable": "fees",
           },
           {
+            "expression": "fees / 2",
+            "variable": "fees_bob",
+          },
+          {
+            "expression": "fees - fees_bob",
+            "variable": "fees_caro",
+          },
+          {
             "expression": "@MAKER_FEE",
             "variable": "maker_fee_val",
           },
           {
-            "expression": "REF(@BOB_UTXO.amount) - (@MEAN - @A2) - (fees / 2)",
+            "expression": "REF(@BOB_UTXO.amount) - (@MEAN - @A2) - fees_bob",
             "variable": "c_bob",
           },
           {
-            "expression": "REF(@CARO_UTXO.amount) - (@MEAN - @A3) - (fees / 2)",
+            "expression": "REF(@CARO_UTXO.amount) - (@MEAN - @A3) - fees_caro",
             "variable": "c_caro",
           },
         ],
-        "inputs": [],
+        "inputs": [
+          {
+            "index": 0,
+            "utxoRef": "@BOB_UTXO",
+          },
+          {
+            "index": 1,
+            "utxoRef": "@CARO_UTXO",
+          },
+        ],
         "name": "TRICOUNT",
         "outputs": [
           {

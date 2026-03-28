@@ -33,13 +33,15 @@ PSBT_SCHEMA TRICOUNT:
         payment = (2 * @MEAN) - @A2 - @A3
         fees_btc = vSize(CURRENT_PSBT) * @FEE_RATE
         fees = @MAKER_FEE + fees_btc
+        fees_bob = fees / 2
+        fees_caro = fees - fees_bob
         maker_fee_val = @MAKER_FEE
-        c_bob  = REF(@BOB_UTXO.amount) - (@MEAN - @A2) - (fees / 2)
-        c_caro = REF(@CARO_UTXO.amount) - (@MEAN - @A3) - (fees / 2)
+        c_bob  = REF(@BOB_UTXO.amount) - (@MEAN - @A2) - fees_bob
+        c_caro = REF(@CARO_UTXO.amount) - (@MEAN - @A3) - fees_caro
 
     ASSERT:
         0: c_bob >= DUST_LIMIT
         1: c_caro >= DUST_LIMIT
-        2: payment > 0
-        3: REF(@BOB_UTXO.amount) >= (@MEAN - @A2) + (fees / 2)
-        4: REF(@CARO_UTXO.amount) >= (@MEAN - @A3) + (fees / 2)
+        2: payment >= DUST_LIMIT
+        3: REF(@BOB_UTXO.amount) >= (@MEAN - @A2) + fees_bob
+        4: REF(@CARO_UTXO.amount) >= (@MEAN - @A3) + fees_caro

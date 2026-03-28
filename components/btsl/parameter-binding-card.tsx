@@ -1,19 +1,21 @@
 'use client';
 
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef, type ChangeEvent } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Spinner } from '@/components/ui/spinner';
-import { CheckCircle, XCircle, AlertTriangle, Link2, Zap, Lock, Camera } from 'lucide-react';
+import { CheckCircle, XCircle, AlertTriangle, Link2, Zap, Lock, FileUp, Camera, FlaskConical } from 'lucide-react';
 import { QRScanner } from '@/components/btsl/qr-scanner';
 import type { WorkflowContext, WorkflowOutputRef } from '@/lib/btsl/types';
-import { BTSLParam, BoundParams, ResolvedUTXO, ERROR_CODES, WARNING_CODES, ParamType } from '@/lib/btsl/types';
+import { BTSLParam, BoundParams, ResolvedUTXO, ParamType } from '@/lib/btsl/types';
 import { fetchUTXO, fetchFeeRate, fetchUTXOByPubkey, fetchUTXOByAddress, validateAddress, validateHexData, parseUTXOString, type PubkeyAddressType } from '@/lib/btsl/api';
-import { validateBoundParams } from '@/lib/btsl/parser';
+import { parseDotParamsFile, upsertParamsFileLine } from '@/lib/btsl/params-file';
+import { hydrateBoundParamsFromValues } from '@/lib/btsl/hydrate-bound-params';
 
 interface ParameterBindingCardProps {
   params: BTSLParam[];
@@ -29,11 +31,15 @@ interface ParameterBindingCardProps {
   workflowDerivedUtxos?: Record<string, WorkflowOutputRef>;
   workflowContext?: WorkflowContext;
   onBound: (boundParams: BoundParams) => void;
+  /** Called when the user applies a `.params` file so the Validator can prefer these entries over the form. */
+  onParamsFileApplied?: (entries: Record<string, string>) => void;
   disabled?: boolean;
   /** Pre-fill values from example selection */
   prefillValues?: Record<string, string>;
   /** Called once prefill values have been applied */
   onPrefillConsumed?: () => void;
+  /** Optional playground demo: full `.params` text applied like “Apply to fields” */
+  demoParamsTemplate?: string;
 }
 
 interface ParamState {
@@ -53,9 +59,11 @@ export function ParameterBindingCard({
   workflowDerivedUtxos = {},
   workflowContext,
   onBound,
+  onParamsFileApplied,
   disabled,
   prefillValues,
   onPrefillConsumed,
+  demoParamsTemplate,
 }: ParameterBindingCardProps) {
   const [paramStates, setParamStates] = useState<Record<string, ParamState>>(() => {
     const initial: Record<string, ParamState> = {};
@@ -100,8 +108,19 @@ export function ParameterBindingCard({
   }, [prefillValues, params, appliedPrefillKey, onPrefillConsumed]);
 
   const [payloadAsText, setPayloadAsText] = useState<Record<string, boolean>>({});
+  const [paramsFileText, setParamsFileText] = useState('');
+  const [paramsFileWarnings, setParamsFileWarnings] = useState<string[]>([]);
   const [isValidating, setIsValidating] = useState(false);
   const [validationErrors, setValidationErrors] = useState<string[]>([]);
+
+  const paramNamesKey = params.map((p) => p.name).join('\0');
+  /** Last @PUBKEY (or @ADDRESS) value we successfully resolved per derived UTXO alias — avoids duplicate Blockstream calls. */
+  const derivedAutoSuccessSourceRef = useRef<Record<string, string>>({});
+  useEffect(() => {
+    setParamsFileText('');
+    setParamsFileWarnings([]);
+    derivedAutoSuccessSourceRef.current = {};
+  }, [paramNamesKey]);
 
   const updateParamState = useCallback((name: string, updates: Partial<ParamState>) => {
     setParamStates(prev => {
@@ -112,49 +131,112 @@ export function ParameterBindingCard({
     });
   }, []);
 
-  const handleFetchUTXO = useCallback(async (paramName: string) => {
-    const state = paramStates[paramName];
-    if (!state?.value) return;
+  const fetchUtxoByRaw = useCallback(
+    async (paramName: string, raw: string) => {
+      const trimmed = raw.trim();
+      if (!trimmed) return;
 
-    const parsed = parseUTXOString(state.value);
-    if (!parsed) {
-      updateParamState(paramName, { 
-        error: 'Invalid format. Use txid:vout (64 hex chars:number)',
-        isValid: false
-      });
-      return;
-    }
+      const parsed = parseUTXOString(trimmed);
+      if (!parsed) {
+        updateParamState(paramName, {
+          error: 'Invalid format. Use txid:vout (64 hex chars:number)',
+          isValid: false,
+        });
+        return;
+      }
 
-    updateParamState(paramName, { isLoading: true, error: undefined });
+      updateParamState(paramName, { isLoading: true, error: undefined });
 
-    try {
-      const utxo = await fetchUTXO(parsed.txid, parsed.vout);
-      updateParamState(paramName, { 
-        resolved: utxo, 
-        isLoading: false, 
-        isValid: true,
-        error: undefined
-      });
-    } catch (error) {
-      updateParamState(paramName, { 
-        error: error instanceof Error ? error.message : 'Failed to fetch UTXO',
-        isLoading: false,
-        isValid: false
-      });
-    }
-  }, [paramStates, updateParamState]);
+      try {
+        const utxo = await fetchUTXO(parsed.txid, parsed.vout);
+        updateParamState(paramName, {
+          resolved: utxo,
+          isLoading: false,
+          isValid: true,
+          error: undefined,
+        });
+      } catch (error) {
+        updateParamState(paramName, {
+          error: error instanceof Error ? error.message : 'Failed to fetch UTXO',
+          isLoading: false,
+          isValid: false,
+        });
+      }
+    },
+    [updateParamState]
+  );
+
+  const handleFetchUTXO = useCallback(
+    async (paramName: string) => {
+      const state = paramStates[paramName];
+      if (!state?.value) return;
+      await fetchUtxoByRaw(paramName, state.value);
+    },
+    [paramStates, fetchUtxoByRaw]
+  );
+
+  const plainUtxoParamNames = useMemo(
+    () =>
+      params
+        .filter(
+          (p) =>
+            p.type === 'UTXO' &&
+            !derivedParamSources[p.name] &&
+            !workflowDerivedUtxos[p.name]
+        )
+        .map((p) => p.name),
+    [params, derivedParamSources, workflowDerivedUtxos]
+  );
+
+  const plainUtxoValuesKey = useMemo(
+    () => plainUtxoParamNames.map((n) => paramStates[n]?.value ?? '').join('\0'),
+    [plainUtxoParamNames, paramStates]
+  );
+
+  const paramStatesRef = useRef(paramStates);
+  paramStatesRef.current = paramStates;
+
+  useEffect(() => {
+    if (disabled) return;
+    const t = setTimeout(() => {
+      const latest = paramStatesRef.current;
+      for (const name of plainUtxoParamNames) {
+        const st = latest[name];
+        const v = st?.value?.trim() ?? '';
+        const parsed = parseUTXOString(v);
+        if (!parsed) continue;
+        if (st?.isLoading) continue;
+        const r = st?.resolved;
+        if (r && typeof r === 'object' && r !== null && 'txid' in r && 'vout' in r) {
+          const ru = r as ResolvedUTXO;
+          if (ru.txid.toLowerCase() === parsed.txid.toLowerCase() && ru.vout === parsed.vout) continue;
+        }
+        void fetchUtxoByRaw(name, v);
+      }
+    }, 450);
+    return () => clearTimeout(t);
+  }, [disabled, plainUtxoParamNames, plainUtxoValuesKey, fetchUtxoByRaw]);
 
   const handleFetchFeeRate = useCallback(async (paramName: string) => {
     updateParamState(paramName, { isLoading: true, error: undefined });
 
     try {
       const fees = await fetchFeeRate();
-      updateParamState(paramName, { 
-        value: String(fees.fastestFee),
+      const rateStr = String(fees.fastestFee);
+      updateParamState(paramName, {
+        value: rateStr,
         resolved: fees.fastestFee,
-        isLoading: false, 
+        isLoading: false,
         isValid: true,
-        error: undefined
+        error: undefined,
+      });
+      setParamsFileText((prev) => {
+        const next = upsertParamsFileLine(prev, paramName, rateStr);
+        if (onParamsFileApplied) {
+          const { entries } = parseDotParamsFile(next);
+          queueMicrotask(() => onParamsFileApplied(entries));
+        }
+        return next;
       });
     } catch (error) {
       updateParamState(paramName, { 
@@ -163,40 +245,86 @@ export function ParameterBindingCard({
         isValid: false
       });
     }
-  }, [updateParamState]);
+  }, [updateParamState, onParamsFileApplied]);
 
-  const handleFetchDerivedUTXO = useCallback(async (aliasParamName: string) => {
-    const sourceParam = derivedParamSources[aliasParamName];
-    if (!sourceParam) return;
-    const sourceState = paramStates[sourceParam];
-    const raw = typeof sourceState?.resolved === 'string' ? sourceState.resolved : sourceState?.value;
-    if (!raw?.trim()) {
-      const t = derivedParamSourceTypes[aliasParamName] ?? 'PUBKEY';
-      updateParamState(aliasParamName, { error: `Set @${sourceParam} (${t.toLowerCase()}) first`, isValid: false });
-      return;
-    }
-    updateParamState(aliasParamName, { isLoading: true, error: undefined });
-    try {
-      const srcType = derivedParamSourceTypes[aliasParamName] ?? 'PUBKEY';
-      const utxo =
-        srcType === 'ADDRESS'
-          ? await fetchUTXOByAddress(raw.trim())
-          : await fetchUTXOByPubkey(raw.trim(), 'mainnet', derivedParamAddressTypes[aliasParamName] ?? 'P2WPKH');
-      updateParamState(aliasParamName, {
-        value: `${utxo.txid}:${utxo.vout}`,
-        resolved: utxo,
-        isLoading: false,
-        isValid: true,
-        error: undefined
-      });
-    } catch (e) {
-      updateParamState(aliasParamName, {
-        error: e instanceof Error ? e.message : 'Failed to fetch UTXO from source',
-        isLoading: false,
-        isValid: false
-      });
-    }
-  }, [derivedParamSources, derivedParamSourceTypes, derivedParamAddressTypes, paramStates, updateParamState]);
+  const handleFetchDerivedUTXO = useCallback(
+    async (aliasParamName: string, statesSnapshot?: Record<string, ParamState>) => {
+      const sourceParam = derivedParamSources[aliasParamName];
+      if (!sourceParam) return;
+      const states = statesSnapshot ?? paramStates;
+      const sourceState = states[sourceParam];
+      const raw = typeof sourceState?.resolved === 'string' ? sourceState.resolved : sourceState?.value;
+      if (!raw?.trim()) {
+        const t = derivedParamSourceTypes[aliasParamName] ?? 'PUBKEY';
+        updateParamState(aliasParamName, { error: `Set @${sourceParam} (${t.toLowerCase()}) first`, isValid: false });
+        return;
+      }
+      const trimmed = raw.trim();
+      updateParamState(aliasParamName, { isLoading: true, error: undefined });
+      try {
+        const srcType = derivedParamSourceTypes[aliasParamName] ?? 'PUBKEY';
+        const utxo =
+          srcType === 'ADDRESS'
+            ? await fetchUTXOByAddress(trimmed)
+            : await fetchUTXOByPubkey(trimmed, 'mainnet', derivedParamAddressTypes[aliasParamName] ?? 'P2WPKH');
+        derivedAutoSuccessSourceRef.current[aliasParamName] = trimmed;
+        updateParamState(aliasParamName, {
+          value: `${utxo.txid}:${utxo.vout}`,
+          resolved: utxo,
+          isLoading: false,
+          isValid: true,
+          error: undefined,
+        });
+      } catch (e) {
+        delete derivedAutoSuccessSourceRef.current[aliasParamName];
+        updateParamState(aliasParamName, {
+          error: e instanceof Error ? e.message : 'Failed to fetch UTXO from source',
+          isLoading: false,
+          isValid: false,
+        });
+      }
+    },
+    [derivedParamSources, derivedParamSourceTypes, derivedParamAddressTypes, paramStates, updateParamState]
+  );
+
+  const derivedSourceValuesKey = useMemo(() => {
+    return params
+      .filter((p) => p.type === 'UTXO' && derivedParamSources[p.name])
+      .map((p) => {
+        const src = derivedParamSources[p.name];
+        return `${p.name}:${src}:${paramStates[src]?.value ?? ''}`;
+      })
+      .join('|');
+  }, [params, derivedParamSources, paramStates]);
+
+  useEffect(() => {
+    if (disabled) return;
+    const t = window.setTimeout(() => {
+      const latest = paramStatesRef.current;
+      for (const p of params) {
+        if (p.type !== 'UTXO') continue;
+        const alias = p.name;
+        const src = derivedParamSources[alias];
+        if (!src) continue;
+        const srcState = latest[src];
+        const raw =
+          (typeof srcState?.resolved === 'string' ? srcState.resolved : srcState?.value)?.trim() ?? '';
+        if (!raw) continue;
+        const srcType = derivedParamSourceTypes[alias] ?? 'PUBKEY';
+        if (srcType === 'PUBKEY') {
+          const hex = raw.replace(/^0x/i, '');
+          if (!/^[0-9a-fA-F]{66}$/.test(hex)) continue;
+        } else if (srcType === 'ADDRESS') {
+          if (!validateAddress(raw).valid) continue;
+        }
+        const st = latest[alias];
+        if (st?.isLoading) continue;
+        if (derivedAutoSuccessSourceRef.current[alias] === raw && st?.isValid === true) continue;
+        void handleFetchDerivedUTXO(alias, latest);
+      }
+    }, 500);
+    return () => window.clearTimeout(t);
+  }, [disabled, params, derivedParamSources, derivedParamSourceTypes, derivedSourceValuesKey, handleFetchDerivedUTXO]);
 
   const handleFetchUTXOFromWorkflow = useCallback(async (paramName: string) => {
     const ref = workflowDerivedUtxos[paramName];
@@ -314,59 +442,141 @@ export function ParameterBindingCard({
     updateParamState(param.name, updates);
   }, [updateParamState, payloadParamNames]);
 
+  const paramsFileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleParamsFileChosen = useCallback((e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const text = typeof reader.result === 'string' ? reader.result : '';
+      setParamsFileText(text);
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  }, []);
+
+  const handleApplyParamsFile = useCallback(() => {
+    const { entries, warnings } = parseDotParamsFile(paramsFileText);
+    setParamsFileWarnings(warnings);
+    for (const p of params) {
+      if (entries[p.name] !== undefined) {
+        handleValueChange(p, entries[p.name]);
+      }
+    }
+    onParamsFileApplied?.(entries);
+    window.setTimeout(() => {
+      for (const p of params) {
+        if (p.type !== 'UTXO') continue;
+        if (derivedParamSources[p.name] || workflowDerivedUtxos[p.name]) continue;
+        const v = entries[p.name];
+        if (v === undefined) continue;
+        if (!parseUTXOString(v.trim())) continue;
+        void fetchUtxoByRaw(p.name, v);
+      }
+    }, 0);
+  }, [
+    paramsFileText,
+    params,
+    handleValueChange,
+    onParamsFileApplied,
+    derivedParamSources,
+    workflowDerivedUtxos,
+    fetchUtxoByRaw,
+  ]);
+
+  const handleLoadDemoParams = useCallback(() => {
+    const text = demoParamsTemplate?.trim();
+    if (!text) return;
+    setParamsFileText(text);
+    const { entries, warnings } = parseDotParamsFile(text);
+    setParamsFileWarnings(warnings);
+    for (const p of params) {
+      if (entries[p.name] !== undefined) {
+        handleValueChange(p, entries[p.name]);
+      }
+    }
+    onParamsFileApplied?.(entries);
+    window.setTimeout(() => {
+      for (const p of params) {
+        if (p.type !== 'UTXO') continue;
+        if (derivedParamSources[p.name] || workflowDerivedUtxos[p.name]) continue;
+        const v = entries[p.name];
+        if (v === undefined) continue;
+        if (!parseUTXOString(v.trim())) continue;
+        void fetchUtxoByRaw(p.name, v);
+      }
+    }, 0);
+  }, [
+    demoParamsTemplate,
+    params,
+    handleValueChange,
+    onParamsFileApplied,
+    derivedParamSources,
+    workflowDerivedUtxos,
+    fetchUtxoByRaw,
+  ]);
+
   const handleConfirmParameters = useCallback(async () => {
     setIsValidating(true);
     setValidationErrors([]);
 
-    // Build values map
     const values: Record<string, string> = {};
-    params.forEach(p => {
+    params.forEach((p) => {
       values[p.name] = paramStates[p.name]?.value || '';
     });
 
-    // Validate all parameters
-    const { valid, errors, warnings } = validateBoundParams(params, values, { payloadParamNames });
-
-    // Check all UTXOs are resolved
-    const unresolvedUtxos = params
-      .filter(p => p.type === 'UTXO')
-      .filter(p => !paramStates[p.name]?.resolved);
-
-    if (unresolvedUtxos.length > 0) {
-      setValidationErrors([
-        ...errors.map(e => e.message),
-        ...unresolvedUtxos.map(p => `UTXO @${p.name} not resolved - click Fetch to resolve`)
-      ]);
-      setIsValidating(false);
-      return;
-    }
-
-    if (!valid) {
-      setValidationErrors(errors.map(e => e.message));
-      setIsValidating(false);
-      return;
-    }
-
-    // Build bound params
-    const boundParams: BoundParams = {};
-    params.forEach(p => {
-      const state = paramStates[p.name];
-      boundParams[p.name] = {
-        type: p.type,
-        rawValue: state?.value || '',
-        resolved: state?.resolved,
-        ...(payloadParamNames.includes(p.name) && { payloadAsText: Boolean(payloadAsText[p.name]) })
-      };
+    const result = await hydrateBoundParamsFromValues(params, values, {
+      payloadParamNames,
+      payloadAsText,
+      derivedParamSources,
+      derivedParamSourceTypes,
+      derivedParamAddressTypes,
+      workflowDerivedUtxos,
+      workflowContext: workflowContext ?? { steps: {} },
     });
 
-    setIsValidating(false);
-    onBound(boundParams);
-  }, [params, paramStates, onBound]);
+    if (!result.ok) {
+      setValidationErrors(result.errors);
+      setIsValidating(false);
+      return;
+    }
 
-  const allValid = params.every(p => {
-    const state = paramStates[p.name];
-    if (!state?.value) return false;
-    if (p.type === 'UTXO' && !state.resolved) return false;
+    setIsValidating(false);
+    onBound(result.bound);
+  }, [
+    params,
+    paramStates,
+    payloadParamNames,
+    payloadAsText,
+    derivedParamSources,
+    derivedParamSourceTypes,
+    derivedParamAddressTypes,
+    workflowDerivedUtxos,
+    workflowContext,
+    onBound,
+  ]);
+
+  const allValid = params.every((p) => {
+    const state = paramStates[p.name] ?? { value: '' };
+    const v = state.value?.trim() ?? '';
+
+    if (p.type === 'UTXO') {
+      if (derivedParamSources[p.name]) {
+        const src = derivedParamSources[p.name];
+        const srcState = paramStates[src] ?? { value: '' };
+        const sv = srcState.value?.trim() ?? '';
+        if (!sv) return false;
+        return srcState.isValid !== false;
+      }
+      if (workflowDerivedUtxos[p.name]) {
+        return true;
+      }
+      if (!v) return false;
+      return /^[0-9a-fA-F]{64}:\d+$/.test(v);
+    }
+
+    if (!v) return false;
     return state.isValid !== false;
   });
 
@@ -660,6 +870,99 @@ export function ParameterBindingCard({
               This schema has no @PARAM declarations.
             </AlertDescription>
           </Alert>
+        )}
+
+        {!disabled && params.length > 0 && demoParamsTemplate?.trim() && (
+          <Alert className="border-primary/35 bg-primary/5">
+            <FlaskConical className="h-4 w-4 text-primary" />
+            <AlertTitle>Recommended next step</AlertTitle>
+            <AlertDescription className="text-muted-foreground">
+              Click <strong>Load demo fixture</strong> below to paste the playground&apos;s <span className="font-mono">.params</span>{' '}
+              snippet and fill every field (including UTXO lookup from pubkey where the schema uses{' '}
+              <span className="font-mono">From(@PUBKEY)</span>). Real mainnet data for testing only — you cannot sign without the
+              keys. Then click <strong>Confirm Parameters</strong> so Maker and Validator share the same binding.
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {!disabled && params.length > 0 && (
+          <div
+            id="btsl-params-load-section"
+            className="rounded-lg border bg-muted/30 p-4 space-y-2 scroll-mt-24"
+          >
+            <div className="space-y-1">
+              <Label className="text-sm font-semibold">Load PARAMS</Label>
+              <p className="text-xs text-muted-foreground leading-relaxed">
+                Paste <span className="font-mono">.params</span> text (<code className="text-xs">KEY=value</code> per line,{' '}
+                <code className="text-xs">#</code> comments allowed) or choose a file
+                {demoParamsTemplate?.trim() ? (
+                  <> — or use the playground demo fixture button.</>
+                ) : (
+                  <>.</>
+                )}
+              </p>
+            </div>
+            <Textarea
+              value={paramsFileText}
+              onChange={(e) => setParamsFileText(e.target.value)}
+              placeholder={'MY_UTXO=ab12...ef:0\nFEE_RATE=12'}
+              className="font-mono text-xs min-h-[72px]"
+              spellCheck={false}
+            />
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                ref={paramsFileInputRef}
+                type="file"
+                accept=".params,.txt,text/plain"
+                className="hidden"
+                onChange={handleParamsFileChosen}
+              />
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                onClick={() => paramsFileInputRef.current?.click()}
+              >
+                <FileUp className="mr-2 h-4 w-4" />
+                Choose file
+              </Button>
+              <Button
+                type="button"
+                variant="default"
+                size="sm"
+                onClick={handleApplyParamsFile}
+                disabled={!paramsFileText.trim()}
+              >
+                Apply to fields
+              </Button>
+              {demoParamsTemplate?.trim() ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={handleLoadDemoParams}
+                  title="Pastes the bundled .params text, applies all KEY=value lines to the form, and triggers chain lookup for UTXOs where applicable"
+                >
+                  <FlaskConical className="mr-2 h-4 w-4" />
+                  Load demo fixture
+                </Button>
+              ) : null}
+            </div>
+            {demoParamsTemplate?.trim() ? (
+              <p className="text-xs text-muted-foreground">
+                One click loads the same values our Quick Start examples use. Schemas with <span className="font-mono">From(@PUBKEY)</span>{' '}
+                also auto-resolve a UTXO from Blockstream after the pubkey is set — no extra click needed unless you change the key.
+              </p>
+            ) : null}
+            {paramsFileWarnings.length > 0 && (
+              <p className="text-xs text-amber-600 dark:text-amber-500">{paramsFileWarnings.join(' · ')}</p>
+            )}
+            <p className="text-xs text-muted-foreground">
+              After <strong>Confirm Parameters</strong>, the Checker uses your confirmed field values; the box above stays
+              in sync when you use <strong>Fetch Current</strong> on fee rate. Use Apply to load a file, then Confirm so
+              Maker and Validator share the same binding.
+            </p>
+          </div>
         )}
 
         {!disabled && params.map(renderParamInput)}

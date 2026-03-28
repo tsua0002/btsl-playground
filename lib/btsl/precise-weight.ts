@@ -5,12 +5,14 @@
  */
 
 import * as bitcoin from 'bitcoinjs-lib';
-import type { BTSLInput, BTSLOutput } from './types';
+import type { BTSLInput, BTSLOutput, BTSLSchema } from './types';
 import { toPayloadHex } from './types';
 import type { BTSLDocument } from './types';
 import { compileScriptAsmToHex } from './script-compiler';
+import { buildScriptOutputPkScript } from './script-output-pk';
 import { parseMultisigMFromAsm } from './multisig-m';
 import type { BoundParams } from './types';
+import { buildOpReturnScript } from './op-return-script';
 
 /** Max standard DER ECDSA sig in witness (BIP 141 WCC). */
 const P2WPKH_SIG_PLACEHOLDER = 73;
@@ -100,7 +102,7 @@ function opReturnScriptFromOutput(
     payloadHex = toPayloadHex(raw, false);
   }
   const payloadBytes = Buffer.from(payloadHex, 'hex');
-  return Buffer.concat([Buffer.from([0x6a, payloadBytes.length]), payloadBytes]);
+  return buildOpReturnScript(payloadBytes);
 }
 
 /**
@@ -122,19 +124,10 @@ export function buildOutputScriptsForPreciseVsize(
       continue;
     }
     if (output.type === 'SCRIPT' && output.scriptDef) {
-      const def = document.scriptDefs.find((d) => d.name === output.scriptDef);
-      if (def) {
-        try {
-          const hexStr = compileScriptAsmToHex(def, boundParams, output.scriptParams);
-          const ws = Buffer.from(hexStr, 'hex');
-          const { output: p2wsh } = bitcoin.payments.p2wsh({ redeem: { output: ws }, network });
-          if (p2wsh) {
-            scripts.push(Buffer.from(p2wsh));
-            continue;
-          }
-        } catch {
-          /* fall through */
-        }
+      const pk = buildScriptOutputPkScript(document, output, boundParams, network);
+      if (pk && pk.length > 0) {
+        scripts.push(pk);
+        continue;
       }
       scripts.push(Buffer.alloc(34, 0));
       continue;
@@ -216,6 +209,35 @@ export function computePreciseTxMetrics(
   for (const script of outputScripts) {
     if (script && script.length > 0) {
       tx.addOutput(script, BigInt(1000));
+    }
+  }
+  return { vsize: tx.virtualSize(), weight: tx.weight() };
+}
+
+/**
+ * Virtual size for Checker calc replay: **output scripts and amounts** come from the audited PSBT;
+ * witness stacks use the same schema placeholders as {@link computePreciseTxMetrics}.
+ * This matches `vSize(CURRENT_PSBT)` to the artifact the user pasted (avoids address-resolution drift on CHANGE).
+ */
+export function computePreciseTxMetricsFromPsbt(
+  psbt: bitcoin.Psbt,
+  schema: BTSLSchema,
+  document: BTSLDocument,
+  boundParams: BoundParams
+): { vsize: number; weight: number } {
+  const tx = new bitcoin.Transaction();
+  tx.version = psbt.version;
+  tx.locktime = psbt.locktime;
+  for (const inp of psbt.txInputs) {
+    tx.addInput(Buffer.from(inp.hash), inp.index, inp.sequence ?? 0xffffffff);
+  }
+  for (const out of psbt.txOutputs) {
+    tx.addOutput(Buffer.from(out.script), out.value);
+  }
+  const witnesses = buildWitnessPerInput(schema.inputs, document, boundParams);
+  for (let i = 0; i < witnesses.length; i++) {
+    if (witnesses[i].length > 0) {
+      tx.setWitness(i, witnesses[i]);
     }
   }
   return { vsize: tx.virtualSize(), weight: tx.weight() };

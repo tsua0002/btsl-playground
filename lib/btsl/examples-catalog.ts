@@ -20,6 +20,11 @@ export interface ExampleDefinition {
   };
   /** Pre-filled non-UTXO parameter values for quick demo */
   prefillParams?: Record<string, string>;
+  /**
+   * Full `.params`-style fixture for one-click demo loading (comments with `#` OK).
+   * Use chain-checked values that are not spendable without the real keys.
+   */
+  demoParamsTemplate?: string;
   /** Explorer link pattern for verifying broadcast transactions */
   explorerLinkTemplate?: string;
 }
@@ -88,19 +93,24 @@ PSBT_SCHEMA TRICOUNT:
         payment = (2 * @MEAN) - @A2 - @A3
         fees_btc = vSize(CURRENT_PSBT) * @FEE_RATE
         fees = @MAKER_FEE + fees_btc
+        fees_bob = fees / 2
+        fees_caro = fees - fees_bob
         maker_fee_val = @MAKER_FEE
-        c_bob  = REF(@BOB_UTXO.amount) - (@MEAN - @A2) - (fees / 2)
-        c_caro = REF(@CARO_UTXO.amount) - (@MEAN - @A3) - (fees / 2)
+        c_bob  = REF(@BOB_UTXO.amount) - (@MEAN - @A2) - fees_bob
+        c_caro = REF(@CARO_UTXO.amount) - (@MEAN - @A3) - fees_caro
 
     ASSERT:
         0: c_bob >= DUST_LIMIT
         1: c_caro >= DUST_LIMIT
-        2: payment > 0
-        3: REF(@BOB_UTXO.amount) >= (@MEAN - @A2) + (fees / 2)
-        4: REF(@CARO_UTXO.amount) >= (@MEAN - @A3) + (fees / 2)`;
+        2: payment >= DUST_LIMIT
+        3: REF(@BOB_UTXO.amount) >= (@MEAN - @A2) + fees_bob
+        4: REF(@CARO_UTXO.amount) >= (@MEAN - @A3) + fees_caro`;
 
 const EXAMPLE_MULTISIG_2OF2 = `; Source: github.com/tsua0002/btsl-standard — examples/multisig-2-of-2/schema.bts
 VERSION: 1
+
+CONST:
+    DUST_LIMIT = 546
 
 SCRIPT_DEFS:
     MULTISIG_2_2 P2WSH:
@@ -243,7 +253,82 @@ const DEMO_PUBKEY_2 = '02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b
 const DEMO_ADDRESS = 'bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4';
 const DEMO_ADDRESS_2 = 'bc1q34aq5drpuwy3wgl9lhup9892qp6svr8ldzyy7c';
 const DEMO_FEE_RATE = '5';
-const DEMO_OP_RETURN_PAYLOAD = '48656c6c6f2c20576f726c6421';
+/** OP_RETURN_DEPLOY demo — BTSL tagline as raw hex (HEX_DATA; length > 75 B exercises OP_PUSHDATA1). */
+const DEMO_OP_RETURN_PAYLOAD_HEX =
+  '426974636f696e205472616e73616374696f6e20536368656d61204c616e6775616765200a4b6e6f77207768617420796f75207369676e2e0a41206465636c617261746976652076616c69646174696f6e206c6179657220666f72205053425420776f726b666c6f77732e';
+
+/** Fixture: real UTXO / pubkeys for UI demo — not signable without those private keys. */
+const DEMO_PARAMS_MULTISIG_SPEND = `# TEMPLATE - NOT SIGNABLE
+
+MULTISIG_UTXO=871baebc9d501bc0fbdd148901e2a3b14e2f4144c9e396e8d018d2c97c6da5fe:0
+DEST=1BitcoinEaterAddressDontSendf59kuE
+
+FEE_RATE=3
+
+# Uncompressed secp256k1 pubkeys (04 + x + y), hex — demo fixture only
+KEY1=046cdf0f7b00338184ce9d3d2ca0795555a112455901206c5ed9a65118f79dff7276bdbff536ce723df811640939746279cafc76cf5ac71ca99768fa7b4d135ec4
+KEY2=0455cf4a3ab68a011b18cb0a86aae2b8e9cad6c6355476de05247c57a9632d127084ac7630ad89893b43c486c5a9f7ec6158fb0feb708fa9255d5c4d44bc0858f8
+`;
+
+/** Compressed pubkey shared by Simple Payment prefill + demo `.params` (Blockstream UTXO lookup). */
+const DEMO_SIMPLE_PAYMENT_PUBKEY = '0283409659355b6d1cc3c32decd5d561abaac86c37a353b52895a5e6c196d6f448';
+
+/** PUBKEY_SPEND — demo fixture; not signable without this key's private key. */
+const DEMO_PARAMS_SIMPLE_PAYMENT = `# TEMPLATE - NOT SIGNABLE
+
+FEE_RATE=2
+# Signing key for USER_SIG path (HEX_DATA)
+PUBKEY=${DEMO_SIMPLE_PAYMENT_PUBKEY}
+`;
+
+/** TRICOUNT — demo fixture (mainnet UTXO refs + addresses; signable only with the real keys). */
+const DEMO_PARAMS_TRI_COUNT = `# TEMPLATE
+
+BOB_UTXO=d85a3b216f8d8fb27c83d340649966e0b1ae3124bcd8373ffb6284dd775c49e8:0
+CARO_UTXO=0f0fbcc18fd0d090ad3402574df8404cec1176bc000f9aa0dc19f8d832ff94db:0
+
+ALICE_ADDRESS=1BitcoinEaterAddressDontSendf59kuE
+MAKER_ADDRESS=1SatoshihTC26vJYKQYfdADhTwuCnUkto
+
+FEE_RATE=5
+MAKER_FEE=1000
+MEAN=2300
+A2=1800
+A3=2100
+`;
+
+/** OP_RETURN_DEPLOY — demo fixture (mainnet UTXO ref + payload hex; needs wallet value for change ≥ dust after fee). */
+const DEMO_PARAMS_OP_RETURN_DEPLOY = `# TEMPLATE
+
+USER=3387418aaddb4927209c5032f515aa442a6587d6e54677f08a03b8fa7789e688:1
+
+# Small OP_RETURN payload as HEX_DATA
+PAYLOAD=${DEMO_OP_RETURN_PAYLOAD_HEX}
+
+FEE_RATE=2
+`;
+
+/** Taproot timelock vault — demo `.params` (mainnet funding UTXO + shared P2TR demo keys). */
+const DEMO_PARAMS_TAPROOT_VAULT = `# TEMPLATE
+
+# For VAULT_DEPOSIT
+FUNDING_UTXO=89336a85c8fbb0062c7cbc4be15266862551e7d6f803497d5fc26ad46ed98524:0
+FEE_RATE=2
+
+# Shared public key used in SCRIPT_DEFS (HEX_DATA, 33-byte compressed)
+KEY_PUB=0241571c22eb9e02bbeed15d5b1d65c8cb36f26f1926cf7cf65ac4f5461ae6f55a
+
+# For VAULT_UNLOCK
+USER_ADDR=bc1phfn9d9egs8qrmxlxth6fc84wpwuu4n2ztqy4m0ac8kxmqcyauegqp8uc6y
+
+# Signing key for USER_SIG path (HEX_DATA)
+USER_KEY=0241571c22eb9e02bbeed15d5b1d65c8cb36f26f1926cf7cf65ac4f5461ae6f55a
+`;
+
+/** Align prefill with DEMO_PARAMS_TAPROOT_VAULT (FEE_RATE used for both steps). */
+const DEMO_VAULT_PREFILL_KEY =
+  '0241571c22eb9e02bbeed15d5b1d65c8cb36f26f1926cf7cf65ac4f5461ae6f55a';
+const DEMO_VAULT_USER_ADDR = 'bc1phfn9d9egs8qrmxlxth6fc84wpwuu4n2ztqy4m0ac8kxmqcyauegqp8uc6y';
 
 export const EXAMPLES_CATALOG: ExampleDefinition[] = [
   {
@@ -257,18 +342,20 @@ export const EXAMPLES_CATALOG: ExampleDefinition[] = [
     btsl: EXAMPLE_SIMPLE_PAYMENT,
     quickTutorial: {
       steps: [
-        'A demo public key is pre-filled. Replace it with your own compressed pubkey (02/03 + 32 bytes hex) if desired.',
-        'Set FEE_RATE (sat/vB) — 5 is pre-filled. Click "Fetch Current" for live network rates.',
-        'Click "Fetch from @PUBKEY" to resolve your UTXO from the blockchain via Blockstream API.',
+        'A demo compressed pubkey is pre-filled (same as "Load demo fixture"). The playground auto-fetches a mainnet UTXO for it; replace with your own 02/03… key if you like.',
+        'Set FEE_RATE (sat/vB) — 2 is pre-filled (demo). Click "Fetch Current" for live network rates.',
+        'Optional: click "Fetch from @PUBKEY" again after changing the key (auto-fetch also runs after edits).',
         'Confirm parameters, then generate and run the code to build the PSBT.',
         'Import the PSBT into Sparrow Wallet, Coldcard, or scan the QR code with SeedSigner.',
       ],
       requiredParams: ['@PUBKEY', '@FEE_RATE'],
     },
     prefillParams: {
-      PUBKEY: DEMO_PUBKEY_1,
-      FEE_RATE: DEMO_FEE_RATE,
+      PUBKEY: DEMO_SIMPLE_PAYMENT_PUBKEY,
+      /** Same pubkey as `demoParamsTemplate` so Quick Start matches "Load demo fixture". */
+      FEE_RATE: '2',
     },
+    demoParamsTemplate: DEMO_PARAMS_SIMPLE_PAYMENT,
     explorerLinkTemplate: 'https://blockstream.info/tx/{txid}',
   },
   {
@@ -282,22 +369,23 @@ export const EXAMPLES_CATALOG: ExampleDefinition[] = [
     btsl: EXAMPLE_TRI_COUNT,
     quickTutorial: {
       steps: [
-        'Enter real UTXOs for @BOB_UTXO and @CARO_UTXO (format: txid:vout), then click Fetch for each.',
-        'Destination addresses and fee parameters are pre-filled — adjust as needed.',
-        "Set @MEAN (shared expense total) and @A2, @A3 (each party's contribution).",
-        'Confirm and run to build the multi-party PSBT for coordinated signing.',
+        'Use “Load demo fixture” to paste the bundled `.params` (UTXOs, addresses, MEAN/A2/A3) and auto-fetch chain amounts, or enter your own `txid:vout` and Fetch.',
+        'Adjust @FEE_RATE / @MAKER_FEE / bill split if needed — demo uses MEAN=2300, A2=1800, A3=2100 so `payment` clears dust.',
+        'Confirm parameters, then run to build the multi-party PSBT for coordinated signing.',
       ],
       requiredParams: ['@BOB_UTXO', '@CARO_UTXO', '@FEE_RATE'],
     },
     prefillParams: {
-      ALICE_ADDRESS: DEMO_ADDRESS,
-      MAKER_ADDRESS: DEMO_ADDRESS_2,
-      FEE_RATE: DEMO_FEE_RATE,
+      /** Match demoParamsTemplate so Quick Start matches “Load demo fixture”. */
+      ALICE_ADDRESS: '1BitcoinEaterAddressDontSendf59kuE',
+      MAKER_ADDRESS: '1SatoshihTC26vJYKQYfdADhTwuCnUkto',
+      FEE_RATE: '5',
       MAKER_FEE: '1000',
-      MEAN: '50000',
-      A2: '30000',
-      A3: '20000',
+      MEAN: '2300',
+      A2: '1800',
+      A3: '2100',
     },
+    demoParamsTemplate: DEMO_PARAMS_TRI_COUNT,
     explorerLinkTemplate: 'https://blockstream.info/tx/{txid}',
   },
   {
@@ -324,6 +412,7 @@ export const EXAMPLES_CATALOG: ExampleDefinition[] = [
       KEY1: DEMO_PUBKEY_1,
       KEY2: DEMO_PUBKEY_2,
     },
+    demoParamsTemplate: DEMO_PARAMS_MULTISIG_SPEND,
     explorerLinkTemplate: 'https://blockstream.info/tx/{txid}',
   },
   {
@@ -350,6 +439,7 @@ export const EXAMPLES_CATALOG: ExampleDefinition[] = [
       KEY1: DEMO_PUBKEY_1,
       KEY2: DEMO_PUBKEY_2,
     },
+    demoParamsTemplate: DEMO_PARAMS_MULTISIG_SPEND,
     explorerLinkTemplate: 'https://blockstream.info/tx/{txid}',
   },
   {
@@ -363,17 +453,18 @@ export const EXAMPLES_CATALOG: ExampleDefinition[] = [
     btsl: EXAMPLE_OP_RETURN_DEPLOY,
     quickTutorial: {
       steps: [
-        'Enter a funding UTXO (@USER in txid:vout format) and click Fetch.',
-        'A demo payload (hex-encoded "Hello, World!") is pre-filled in @PAYLOAD.',
-        'Set FEE_RATE and generate the PSBT.',
-        'After signing and broadcasting, verify the embedded data on Blockstream Explorer.',
+        'Use “Load demo fixture” for bundled USER + PAYLOAD hex + FEE_RATE, then Fetch @USER.',
+        '@PAYLOAD is hex-encoded text (>75 B); leave “Treat as text” off so it stays raw HEX_DATA.',
+        'Confirm and run — OP_RETURN uses standard push encoding (OP_PUSHDATA1 when needed).',
+        'After broadcast, verify the decoded message in the explorer.',
       ],
       requiredParams: ['@USER', '@PAYLOAD', '@FEE_RATE'],
     },
     prefillParams: {
-      PAYLOAD: DEMO_OP_RETURN_PAYLOAD,
-      FEE_RATE: DEMO_FEE_RATE,
+      PAYLOAD: DEMO_OP_RETURN_PAYLOAD_HEX,
+      FEE_RATE: '2',
     },
+    demoParamsTemplate: DEMO_PARAMS_OP_RETURN_DEPLOY,
     explorerLinkTemplate: 'https://blockstream.info/tx/{txid}',
   },
   {
@@ -387,19 +478,19 @@ export const EXAMPLES_CATALOG: ExampleDefinition[] = [
     btsl: EXAMPLE_TAPROOT_VAULT,
     quickTutorial: {
       steps: [
-        'Step 1 — VAULT_DEPOSIT: Enter @FUNDING_UTXO and @KEY_PUB (your pubkey), then generate and sign the deposit PSBT.',
-        'After broadcasting the deposit, paste the confirmed txid into Card 4 to unlock Step 2.',
-        'Step 2 — VAULT_UNLOCK (after 100 blocks): Set @USER_ADDR, @USER_KEY, and @KEY_PUB.',
-        'Generate, sign, and broadcast the unlock PSBT to withdraw your funds.',
+        'Use “Load demo fixture” for FUNDING_UTXO, KEY_PUB, USER_ADDR, USER_KEY, and FEE_RATE=2; Fetch @FUNDING_UTXO.',
+        'Step 1 — VAULT_DEPOSIT: Confirm, run, sign/broadcast; save the parent txid in Card 4.',
+        'Step 2 — Switch to VAULT_UNLOCK (after 100 confirmations for CSV 100), Resolve/Fetch workflow UTXO, Confirm, run unlock PSBT.',
       ],
       requiredParams: ['@FUNDING_UTXO', '@KEY_PUB', '@USER_ADDR', '@USER_KEY', '@FEE_RATE'],
     },
     prefillParams: {
-      KEY_PUB: DEMO_PUBKEY_1,
-      USER_ADDR: DEMO_ADDRESS,
-      USER_KEY: DEMO_PUBKEY_1,
-      FEE_RATE: DEMO_FEE_RATE,
+      KEY_PUB: DEMO_VAULT_PREFILL_KEY,
+      USER_ADDR: DEMO_VAULT_USER_ADDR,
+      USER_KEY: DEMO_VAULT_PREFILL_KEY,
+      FEE_RATE: '2',
     },
+    demoParamsTemplate: DEMO_PARAMS_TAPROOT_VAULT,
     explorerLinkTemplate: 'https://blockstream.info/tx/{txid}',
   },
 ];
