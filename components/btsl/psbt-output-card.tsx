@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -78,6 +78,16 @@ export function PSBTOutputCard({
     }
   }, [result?.psbtHex]);
 
+  const mempoolPreviewHref = useMemo(() => {
+    if (!result?.success) return null;
+    const hex = result.psbtHex?.trim();
+    if (!hex) return null;
+    return `https://mempool.space/tx/preview#tx=${encodeURIComponent(hex)}`;
+  }, [result?.success, result?.psbtHex]);
+
+  /** Practical URL length limits vary by browser; warn only on very large PSBTs. */
+  const mempoolPreviewMaybeTooLong = (result?.psbtHex?.length ?? 0) > 16_000;
+
   if (disabled || !result?.success) {
     return (
       <Card className="opacity-50">
@@ -137,6 +147,29 @@ export function PSBTOutputCard({
             </span>
           </AlertDescription>
         </Alert>
+
+        {mempoolPreviewHref && (
+          <div className="flex flex-col gap-2 rounded-lg border bg-muted/20 p-3 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-sm text-muted-foreground">
+              Inspect inputs and outputs in mempool.space&apos;s preview (unsigned PSBT as hex in the URL fragment).
+            </p>
+            <Button variant="outline" size="sm" className="shrink-0" asChild>
+              <a
+                href={mempoolPreviewHref}
+                target="_blank"
+                rel="noopener noreferrer"
+                title={
+                  mempoolPreviewMaybeTooLong
+                    ? 'This PSBT is very large; if the page fails to load, use a shorter example or copy hex into mempool manually.'
+                    : undefined
+                }
+              >
+                <ExternalLink className="mr-2 h-4 w-4" />
+                Preview on mempool.space
+              </a>
+            </Button>
+          </div>
+        )}
 
         {schemaName && showWorkflowStep && (
           <div className="rounded-lg border p-4 space-y-3">
