@@ -115,22 +115,6 @@ The engine resolves `calc` assignments **sequentially in declaration order**.
 **`vSize` computation** uses the canonical weight model (§3.5). Do not use wallet
 runtime estimation. The full model is reproduced in Part 3 of this guide.
 
-**Fee budget (`fees` variable):** When the `calc` line assigns **`fees`** and the RHS uses
-`vSize(CURRENT_PSBT)`, implementations SHOULD apply **`vsize + FEE_BUDGET_VSIZE_SLACK_VB`**
-(two virtual bytes) in that product only, and SHOULD use **`ceil`** on the resulting
-satoshi fee so the implicit fee rate is **≥** the declared `sat/vB` (avoids sub-target
-rates from explorer rounding or signature length variance). Other `calc` lines that
-reference `vSize` use the exact template `vsize`; `ASSERT` uses exact `vsize`.
-
-**PSBT vs vSize (Step 1.3 vs Step 1.5):** Step 1.3 runs **before** native PSBT construction.
-`vSize(CURRENT_PSBT)` is therefore computed from the **schema** (input types, output
-types, resolved addresses, `SCRIPT` / `OP_RETURN` payloads)—not from unsigned PSBT
-bytes. The PSBT in Step 1.5 is built only with `psbt.addInput` / `addOutput` per BIP174;
-constructing a **raw `Transaction` first and converting to PSBT at the end** remains
-**non-compliant** (Step 1.5). Using a temporary in-memory transaction **solely** as a
-calculator whose `virtualSize()` matches §3.5 / WM-01–WM-03 is an optional implementation
-shortcut; the **normative** fee size is always §3.5.
-
 ---
 
 ### Step 1.4 — ASSERT Evaluation
@@ -279,7 +263,8 @@ function buildOutput(output_def, calc_results, params) {
     switch (output_def.type) {
 
         // ── Standard address output ─────────────────────────────────────
-        // address_ref may be a STRING, compile_ref, alias_ref, or IDENTIFIER.
+        // address_ref: STRING, compile_ref, alias_ref, PASCAL_CASE_ID, or
+        // IDENTIFIER (Formal Grammar in spec — lexer priority; bare snake_case_id invalid).
         // alias_ref (e.g. selected_utxo.address) resolves from the binding context.
         // amount may be a literal (sats) or a calc variable name.
         case "ADDRESS":
@@ -578,4 +563,3 @@ Implementations MUST produce these exact values:
 | `BTSL_WARN_06` | `MISSING_FEES_DECLARATION` | No `calc` variable named `fees`. Implicit balance check is skipped. |
 | `BTSL_WARN_07` | `EXCEEDS_STANDARD_WEIGHT` | `tx_weight` > 400,000 wu. Transaction will likely be rejected by standard relay policy. |
 | `BTSL_WARN_08` | `INFERRED_PUBKEY_TYPE` | `From()` used without `native_input_type`. Address type inferred as P2TR by default. Declare `NATIVE` explicitly for deterministic type binding. |
-

@@ -1,8 +1,11 @@
 # Bitcoin Transaction Schema Language (BTSL) — Specification v1.0
 
 **Status:** Reference Specification [DRAFT]
+
 **Date:** March 2026
-**Author:** TS
+
+**Author:** Thomas Suau
+
 **Scope:** PSBT Construction, Audit, and Workflow (BIP174/BIP370)
 
 ---
@@ -101,6 +104,21 @@ COMMENT             ::= ";", { any_char_except_NL }, NL
 INDENT              ::= (* increase in indentation level *)
 DEDENT              ::= (* decrease in indentation level *)
 
+(* Normative Colon Rule:                                             *)
+(* The lexer MUST emit SECTION_OPEN when ":" is immediately          *)
+(* followed by NL then INDENT (block opener).                        *)
+(* The lexer MUST emit COLON in all other positions.                 *)
+(* Exception: a ":" immediately following an INTEGER token           *)
+(* is ALWAYS emitted as COLON — regardless of what follows.          *)
+(* This applies uniformly to input indices, output indices,         *)
+(* and assert indices. A lexer MUST NOT emit SECTION_OPEN            *)
+(* in this position even if NL + INDENT follows.                    *)
+(* A ":" at end-of-line NOT followed by INDENT → BTSL_ERR_00.       *)
+(* This rule makes workflow_ref, input/output indices, and           *)
+(* inline field assignments unambiguous in all contexts.             *)
+SECTION_OPEN        ::= ":", NL, INDENT
+COLON               ::= ":"
+
 (* Identifier taxonomy — Lexer Priority: PASCAL_CASE_ID             *)
 (*                                      > snake_case_id              *)
 (*                                      > IDENTIFIER                 *)
@@ -138,20 +156,28 @@ btsl_file           ::= { NL | COMMENT }*,
                         { script_defs_section },
                         { psbt_schema_section }+
 
-version_header      ::= "VERSION:", INTEGER, NL
+version_header      ::= "VERSION", COLON, INTEGER, NL
 
 (* ================================================================ *)
 (* 2. DEFINITION SECTIONS                                            *)
 (* ================================================================ *)
 
-const_section       ::= "CONST:", NL, INDENT, { const_assignment, NL }+, DEDENT
+(* CONST scoping rules:                                              *)
+(* A CONST declared at top-level (btsl_file) is GLOBAL: visible in  *)
+(* all PSBT_SCHEMA sections within the file.                         *)
+(* A CONST declared inside a PSBT_SCHEMA is LOCAL: visible only in  *)
+(* that schema (OUTPUTS, calc, ASSERT).                              *)
+(* LOCAL takes precedence over GLOBAL for identical names           *)
+(* (shadowing). Shadowing MUST emit BTSL_WARN_09.                   *)
+(* Redefinition within the SAME scope is BTSL_ERR_00.               *)
+const_section       ::= "CONST", SECTION_OPEN, { const_assignment, NL }+, DEDENT
 const_assignment    ::= IDENTIFIER, "=", value
 
-params_section      ::= "PARAMS:", NL, INDENT, { param_declaration, NL }+, DEDENT
+params_section      ::= "PARAMS", SECTION_OPEN, { param_declaration, NL }+, DEDENT
 param_declaration   ::= "@", PASCAL_CASE_ID,
-                        [ ":", ("UTXO" | "ADDRESS" | "FEERATE" | "HEX_DATA" | "SATOSHI" | "Pubkey") ]
+                        [ COLON, ("UTXO" | "ADDRESS" | "FEERATE" | "HEX_DATA" | "SATOSHI" | "Pubkey") ]
 
-options_section     ::= "OPTIONS:", NL, INDENT,
+options_section     ::= "OPTIONS", SECTION_OPEN,
                             { option_assignment, NL }*,
                             [ dependency_declaration, NL ],
                         DEDENT
@@ -162,23 +188,22 @@ dependency_declaration ::= "DEPENDS_ON", PASCAL_CASE_ID
 (* 3. SCRIPT_DEFS                                                    *)
 (* ================================================================ *)
 
-script_defs_section ::= "SCRIPT_DEFS:", NL, INDENT, { script_definition, NL }+, DEDENT
-script_definition   ::= PASCAL_CASE_ID, script_type, ":", NL,
-                            INDENT, (p2tr_body | p2wsh_body | p2sh_body), DEDENT
+script_defs_section ::= "SCRIPT_DEFS", SECTION_OPEN, { script_definition, NL }+, DEDENT
+script_definition   ::= PASCAL_CASE_ID, script_type, SECTION_OPEN,
+                            (p2tr_body | p2wsh_body | p2sh_body), DEDENT
 script_type         ::= "P2TR" | "P2WSH" | "P2SH"
 
-p2tr_body           ::= "internal_key:", internal_key_ref, NL,
-                        "paths:", NL,
-                        INDENT, { path_definition, NL }+, DEDENT
+p2tr_body           ::= "internal_key", COLON, internal_key_ref, NL,
+                        "paths", SECTION_OPEN,
+                        { path_definition, NL }+, DEDENT
 
 (* internal_key_ref: either a user-defined identifier OR the        *)
 (* reserved keyword NUMS_KEY (see §3.7 — Taproot Security Model).   *)
 internal_key_ref    ::= "NUMS_KEY" | IDENTIFIER
 
-path_definition     ::= (PASCAL_CASE_ID | snake_case_id), "SCRIPT:", NL,
-                        INDENT,
-                            "leaf_version:", INTEGER, NL,
-                            "witness:", NL, INDENT, { witness_placeholder, NL }+, DEDENT,
+path_definition     ::= (PASCAL_CASE_ID | snake_case_id), "SCRIPT", SECTION_OPEN,
+                            "leaf_version", COLON, INTEGER, NL,
+                            "witness", SECTION_OPEN, { witness_placeholder, NL }+, DEDENT,
                             asm_block,
                         DEDENT
 
@@ -187,8 +212,8 @@ p2sh_body           ::= asm_block
 
 (* inline asm (space-separated) or multiline (indented) *)
 asm_block           ::= asm_multiline | asm_inline
-asm_multiline       ::= "asm:", NL, INDENT, { asm_element, NL }+, DEDENT
-asm_inline          ::= "asm:", " ", asm_element, { " ", asm_element }+, NL
+asm_multiline       ::= "asm", SECTION_OPEN, { asm_element, NL }+, DEDENT
+asm_inline          ::= "asm", COLON, " ", asm_element, { " ", asm_element }+, NL
 
 (* Note on asm_inline: elements are separated by exactly one or     *)
 (* more ASCII space characters (0x20). The lexer MUST NOT emit a    *)
@@ -213,8 +238,7 @@ witness_placeholder ::= "<sig(" IDENTIFIER ")>"
 (* 4. PSBT SCHEMA                                                    *)
 (* ================================================================ *)
 
-psbt_schema_section ::= "PSBT_SCHEMA", PASCAL_CASE_ID, ":", NL,
-                        INDENT,
+psbt_schema_section ::= "PSBT_SCHEMA", PASCAL_CASE_ID, SECTION_OPEN,
                             [ const_section ],
                             [ params_section ],
                             [ options_section ],
@@ -231,27 +255,27 @@ psbt_schema_section ::= "PSBT_SCHEMA", PASCAL_CASE_ID, ":", NL,
 (* 5. INPUTS & OUTPUTS                                               *)
 (* ================================================================ *)
 
-inputs_section      ::= "INPUTS:", NL, INDENT, { input_line, NL }+, DEDENT
+inputs_section      ::= "INPUTS", SECTION_OPEN, { input_line, NL }+, DEDENT
 input_line          ::= loop_block | single_input
 
 (* FOREACH: reserved syntax — not part of the normative evaluable   *)
 (* core of v1.0. Presence MUST emit BTSL_WARN_01.                   *)
 (* MUST NOT influence evaluation.                                    *)
-loop_block          ::= "FOREACH", PASCAL_CASE_ID, "AS", PASCAL_CASE_ID, ":",
-                        NL, INDENT, single_input, DEDENT
+loop_block          ::= "FOREACH", PASCAL_CASE_ID, "AS", PASCAL_CASE_ID, SECTION_OPEN,
+                        single_input, DEDENT
 
 (* IMPORT: reserved syntax — not part of the normative evaluable    *)
 (* core of v1.0. Presence MUST emit BTSL_WARN_01.                   *)
 (* MUST NOT influence evaluation.                                    *)
 import_declaration  ::= "IMPORT", STRING, NL
 
-single_input        ::= INTEGER, ":", [ native_input_type ], input_source
+single_input        ::= INTEGER, COLON, [ native_input_type ], input_source
 native_input_type   ::= "NATIVE", ("P2PKH" | "P2WPKH" | "P2TR_KEY")
 
 (* input_source handles both complex scripts and native standards *)
 input_source        ::= simple_input_block | unlock_block
 
-simple_input_block  ::= NL, INDENT, "utxo:", (reference | utxo_resolver), NL, DEDENT
+simple_input_block  ::= NL, INDENT, "utxo", COLON, (reference | utxo_resolver), NL, DEDENT
 
 (* utxo_resolver: auto-selects a UTXO from a Pubkey @PARAM.          *)
 (* The AS alias is MANDATORY — omitting it is BTSL_ERR_00.            *)
@@ -264,54 +288,110 @@ simple_input_block  ::= NL, INDENT, "utxo:", (reference | utxo_resolver), NL, DE
 utxo_resolver       ::= "From", "(", compile_ref, ")", "AS", snake_case_id
 
 unlock_block        ::= "UNLOCK", PASCAL_CASE_ID,
-                        [ "USING", (PASCAL_CASE_ID | snake_case_id) ], ":",
-                        NL, INDENT,
-                            "utxo:", reference, NL,
-                            [ "sequence:", INTEGER, NL ],
+                        [ "USING", (PASCAL_CASE_ID | snake_case_id) ], SECTION_OPEN,
+                            "utxo", COLON, reference, NL,
+                            [ "sequence", COLON, INTEGER, NL ],
                             [ script_params_block ],
                             [ witness_data_block ],
                         DEDENT
 
-script_params_block ::= "script_params:", NL, INDENT, { param_assignment, NL }+, DEDENT
-witness_data_block  ::= "witness_data:", NL, INDENT, { witness_assignment, NL }+, DEDENT
+script_params_block ::= "script_params", SECTION_OPEN, { param_assignment, NL }+, DEDENT
+
+(* Normative Witness Binding Rule:                                   *)
+(* Applies ONLY when the referenced script path declares a           *)
+(* "witness:" block (P2TR script paths via path_definition).        *)
+(* P2WSH and P2SH bodies (p2wsh_body, p2sh_body) do not declare     *)
+(* witness placeholders; witness_data entries for those script types *)
+(* are not subject to nominal binding validation.                    *)
+(* The identifiers in witness_data MUST correspond NOMINALLY to      *)
+(* the placeholder names declared in the "witness:" block of the     *)
+(* referenced script path.                                           *)
+(* Matching is case-sensitive and exact.                             *)
+(* An identifier in witness_data with no matching placeholder        *)
+(* → BTSL_ERR_10.                                                    *)
+(* A placeholder declared in "witness:" with no corresponding        *)
+(* witness_data entry → BTSL_ERR_10.                                 *)
+(* Order of witness_assignment entries in witness_data MUST match    *)
+(* the declaration order of witness_placeholder in "witness:".       *)
+(* Order mismatch with correct names → BTSL_ERR_10.                 *)
+witness_data_block  ::= "witness_data", SECTION_OPEN, { witness_assignment, NL }+, DEDENT
 param_assignment    ::= IDENTIFIER, "=", (value | compile_ref)
 witness_assignment  ::= IDENTIFIER, "=", (sign_with_directive | "<empty>")
 sign_with_directive ::= "<SIGN_WITH(", reference, ")>"
 
-outputs_section     ::= "OUTPUTS:", NL, INDENT, { output_line, NL }+, DEDENT
-output_line         ::= INTEGER, ":", output_type
+outputs_section     ::= "OUTPUTS", SECTION_OPEN, { output_line, NL }+, DEDENT
+output_line         ::= INTEGER, COLON, output_type
+
+(* Normative Positional Rule for output_type:                        *)
+(* The parser reads a single line left-to-right:                     *)
+(*   position 1 → address_ref (exactly one syntactic unit)           *)
+(*   position 2 → amount value (INTEGER | snake_case_id | IDENTIFIER)*)
+(*   position 3 → optional unit suffix — absent means sats          *)
+(* A bare snake_case_id at position 1 is ONLY valid as address_ref   *)
+(* if immediately followed by "." (i.e., it is an alias_ref).        *)
+(* A bare snake_case_id at position 1 NOT followed by "."            *)
+(* → BTSL_ERR_00.                                                     *)
+(* "btc" values are normalized ×100,000,000 at parse time.           *)
+(* The runtime manipulates SAT integers exclusively.                  *)
 output_type         ::= (address_ref, amount)
                       | ("OP_RETURN", (HEX_DATA | compile_ref))
                       | ("CHANGE", address_ref, amount)
                       | ("SCRIPT", PASCAL_CASE_ID, amount,
                             [ NL, INDENT, script_params_block, DEDENT ])
 
-(* amount: if unit suffix is omitted, the compiler MUST interpret   *)
-(* the value as sats. Explicit btc values are normalized to sats    *)
-(* (×100,000,000) at parse time. See §3.6.C.                        *)
-amount ::= (INTEGER, ("sats" | "btc")) | 
-          ((snake_case_id | IDENTIFIER), [ "sats" | "btc" ])
+amount              ::= (INTEGER, [ ("sats" | "btc") ])
+                      | ((snake_case_id | IDENTIFIER), [ ("sats" | "btc") ])
 
-address_ref         ::= STRING | compile_ref | alias_ref | IDENTIFIER
+(* unit absent → sats. Normative default, enforced at parse time.    *)
+
+(* address_ref: exactly one syntactic unit. snake_case_id only valid *)
+(* as part of alias_ref (requires "." suffix). Bare snake_case_id    *)
+(* is NOT a valid address_ref.                                        *)
+(* Lexer priority PASCAL_CASE_ID > snake_case_id > IDENTIFIER: a     *)
+(* token such as `foo` is always snake_case_id, never IDENTIFIER.    *)
+(* Thus IDENTIFIER in address_ref covers only forms lexed as         *)
+(* IDENTIFIER (e.g. identifiers starting with "_").                  *)
+address_ref         ::= STRING
+                      | compile_ref
+                      | alias_ref
+                      | PASCAL_CASE_ID
+                      | IDENTIFIER
 
 (* ================================================================ *)
 (* 6. LOGIC AND EXPRESSIONS                                          *)
 (* ================================================================ *)
 
-calc_section        ::= "calc:", NL, INDENT, { calc_assignment, NL }+, DEDENT
+calc_section        ::= "calc", SECTION_OPEN, { calc_assignment, NL }+, DEDENT
 calc_assignment     ::= snake_case_id, "=", expression
 
-assert_section      ::= "ASSERT:", NL, INDENT, { assert_line, NL }+, DEDENT
-assert_line         ::= INTEGER, ":", condition
+assert_section      ::= "ASSERT", SECTION_OPEN, { assert_line, NL }+, DEDENT
+assert_line         ::= INTEGER, COLON, condition
 condition           ::= expression, (">" | "<" | "==" | ">=" | "<=" | "!="), expression
 
-expression          ::= term, { ("+" | "-" | "*" | "/"), term }
-term                ::= value
+expression          ::= additive
+
+additive            ::= multiplicative, { ("+" | "-"), multiplicative }
+
+multiplicative      ::= primary, { ("*" | "/"), primary }
+
+(* Standard arithmetic precedence: "*" and "/" bind tighter than    *)
+(* "+" and "-". Parentheses override precedence.                    *)
+(* Division truncates toward zero (floor for positive operands).    *)
+(* See §3.6.C for arithmetic error rules (BTSL_ERR_08).             *)
+
+(* Normative Alias Priority Rule:                                    *)
+(* alias_ref MUST be attempted before value in primary.             *)
+(* A snake_case_id immediately followed by "." is ALWAYS            *)
+(* resolved as alias_ref — never as value.                          *)
+(* A snake_case_id NOT followed by "." is resolved as value.        *)
+(* Lookahead of exactly one token ("." or not) is sufficient.       *)
+(* No ambiguity remains after this single-token lookahead.          *)
+primary             ::= alias_ref
                       | function_call
                       | compile_ref
                       | onchain_ref
                       | workflow_ref
-                      | alias_ref
+                      | value
                       | "(", expression, ")"
 
 (* alias_ref: references a property of a From() resolver alias.      *)
@@ -349,9 +429,9 @@ onchain_ref         ::= "REF", "(",
 
 (* workflow_ref: references an output of a previously declared      *)
 (* PSBT_SCHEMA by name and index.                                    *)
-workflow_ref        ::= PASCAL_CASE_ID, ":", INTEGER, ".",
+workflow_ref        ::= PASCAL_CASE_ID, COLON, INTEGER, ".",
                         ("amount" | workflow_outpoint)
-workflow_outpoint   ::= "txid", ":", INTEGER
+workflow_outpoint   ::= "txid", COLON, INTEGER
 
 value               ::= INTEGER | STRING | HEX_DATA | BOOLEAN
                       | snake_case_id | IDENTIFIER
@@ -372,13 +452,16 @@ or engine. It governs the interpretation of all subsequent sections.
 | `INPUTS`       | REQUIRED    | Absence → `BTSL_ERR_00`                                                       |
 | `OUTPUTS`      | REQUIRED    | Absence → `BTSL_ERR_00`                                                       |
 | `PARAMS`       | CONDITIONAL | REQUIRED if any `@PARAM` reference appears in the schema. Absence with references → `BTSL_ERR_04b` |
-| `CONST`        | OPTIONAL    | —                                                                             |
+| `CONST` (global) | OPTIONAL    | Visible in all schemas. Shadowed by local `CONST`.                          |
+| `CONST` (local)  | OPTIONAL    | Visible in its `PSBT_SCHEMA` only. Shadows global `CONST`.                    |
 | `SCRIPT_DEFS`  | OPTIONAL    | —                                                                             |
 | `OPTIONS`      | OPTIONAL    | —                                                                             |
 | `calc`         | OPTIONAL    | —                                                                             |
 | `ASSERT`       | OPTIONAL    | If present, **all** assertions MUST be evaluated. Partial execution is strictly prohibited. |
 
 > Each section MUST appear **at most once** per `PSBT_SCHEMA`. A duplicate section raises `BTSL_ERR_00`.
+>
+> **Note:** A top-level `CONST` block applies to the whole file; a `CONST` block inside a `PSBT_SCHEMA` is local to that schema. At most one top-level `CONST` block per file and at most one `CONST` block per `PSBT_SCHEMA`. Duplicate `CONST` blocks at the same level → `BTSL_ERR_00`.
 
 ---
 
@@ -453,13 +536,6 @@ tx_weight = BASE_TX_OVERHEAD
 
 vsize = ceil(tx_weight / 4)        (* single rounding operation *)
 ```
-
-#### 3.5.1.a PSBT, `CURRENT_PSBT`, and vSize (normative clarification)
-
-- **PSBT (BIP174)** is the interchange format for partially signed inputs. An **unsigned** PSBT does not contain final witness stacks; its on-the-wire size is **not** a fee-relevant metric.
-- **`vSize(CURRENT_PSBT)`** is **defined solely** by the closed-form model in §3.5.1–§3.5.5. It denotes the **virtual size (vB)** of the **single transaction that will exist after the PSBT is fully signed and broadcast**, under the witness sizes given in the tables (worst-case canonical / WCC where stated).
-- The name `CURRENT_PSBT` is **contextual**: at `calc` time the engine uses the **declared** `INPUTS` / `OUTPUTS` structure, resolved UTXO types, and resolved output addresses (or script sizes for `SCRIPT` / `OP_RETURN`). No requirement exists to serialize a legacy **Transaction** object for fee math; any method that produces the **same** `tx_weight` and `vsize` as §3.5 (including cross-check against §7.4 vectors WM-01–WM-03) is compliant.
-- **Mapping outputs to §3.5.4:** Implementations MUST classify each output by its **scriptPubKey** (or equivalent): e.g. native SegWit v0 P2WPKH → `P2WPKH` row; Taproot v1 P2TR → `P2TR` row; P2WSH v0 → `P2WSH` row; legacy P2PKH → `P2PKH` row. Address strings MUST be decoded to the correct row (e.g. Bech32 `bc1p…` / `tb1p…` → P2TR; `bc1q…` / `tb1q…` → P2WPKH when length matches P2WPKH).
 
 #### 3.5.2. Transaction Overhead
 
@@ -672,8 +748,8 @@ three sequential phases: **Binding**, **Calculation**, and **Validation**.
 
 | Keyword         | Type      | Description                                                                                     |
 | :-------------- | :-------- | :---------------------------------------------------------------------------------------------- |
-| `CURRENT_PSBT`  | Context   | Abstract context for the **implied finalized transaction** matching the schema’s `INPUTS` / `OUTPUTS` (see §3.5.1.a). Not raw PSBT byte length. |
-| `vSize(PSBT)`   | Function  | **Defined only by §3.5:** `vsize = ceil(tx_weight / 4)` from tables and formulas. Same numeric result as BIP141 virtual size of that finalized transaction. Argument name is historical; compliance does not require building a separate `Transaction` for measurement. |
+| `CURRENT_PSBT`  | Context   | Reference to the transaction object currently being constructed.                                |
+| `vSize(PSBT)`   | Function  | Calculates the virtual size in vbytes using the canonical weight model (§3.5). **Formula:** `vsize = ceil(tx_weight / 4)`, where `tx_weight` is computed per §3.5.1. The `CURRENT_PSBT` argument instructs the compiler to use the transaction being built. |
 | `REF(ref)`      | Function  | Forces an on-chain query to the indexer for the resolved value of `ref`. Accepted arguments: `compile_ref` (fetches the live UTXO value) or `workflow_ref` (fetches the confirmed output value of a previously broadcast schema transaction). See §4.2. |
 | `SUM(INPUTS)`   | Function  | **Global aggregator:** sums the `amount` property of all UTXOs declared in the `INPUTS` section. Requires full resolution of all inputs. Any unresolved input raises `BTSL_ERR_05`. |
 | `SUM(OUTPUTS)`  | Function  | **Global aggregator:** sums the `amount` value of all outputs declared in the `OUTPUTS` section. Used in the implicit balance check (§4.3.C). |
@@ -778,14 +854,11 @@ The engine executes `ASSERT` statements in numerical index order (0 to N).
 
 **Implicit Balance Check:**
 
-If a `calc` variable named `fees` is declared, the compiler MUST verify conservation of
-satoshis using the **miner / non-output burn** amount:
+If a `calc` variable named `fees` is declared, the compiler MUST verify:
 
-- If `fees_btc` is also declared in `calc`, verify  
-  `SUM(INPUTS) == SUM(OUTPUTS) + fees_btc`  
-  (e.g. when `fees` aggregates a maker cut that is already a transaction output).
-- Otherwise verify  
-  `SUM(INPUTS) == SUM(OUTPUTS) + fees`.
+```
+SUM(INPUTS) == SUM(OUTPUTS) + fees
+```
 
 This check is **implicit and non-declarable**: it MUST NOT be possible for a schema
 author to disable it via any syntax. It is executed as the final step of the `ASSERT`
@@ -986,6 +1059,7 @@ Compilation MAY proceed **only if** all mandatory sections (`VERSION`, `INPUTS`,
 | `BTSL_ERR_07`  | `DUST_OUTPUT`            | Amount of a standard or `SCRIPT` output is below `DUST_LIMIT`.                             |
 | `BTSL_ERR_08`  | `ARITHMETIC_ERROR`       | Runtime exception: division by zero, integer overflow, or a `SAT` value resolved to a negative integer. |
 | `BTSL_ERR_09`  | `UTXO_RESOLUTION_FAILURE` | `From()` could not find any confirmed UTXO for the derived address of the given `Pubkey`. |
+| `BTSL_ERR_10`  | `WITNESS_BINDING_MISMATCH` | A `witness_data` identifier does not match any placeholder name in the referenced `witness:` block, a placeholder has no corresponding `witness_data` entry, or the declaration order differs (P2TR paths with `witness:` only; see §2). |
 
 ---
 
@@ -1002,6 +1076,7 @@ Compilation MAY proceed **only if** all mandatory sections (`VERSION`, `INPUTS`,
 | `BTSL_WARN_06`  | `MISSING_FEES_DECLARATION`  | No `calc` variable named `fees` was found. The implicit balance invariant check is skipped.             |
 | `BTSL_WARN_07`  | `EXCEEDS_STANDARD_WEIGHT`   | The computed `tx_weight` exceeds 400,000 wu. The transaction will likely be rejected by standard relay policy. |
 | `BTSL_WARN_08`  | `INFERRED_PUBKEY_TYPE`      | `From()` was used without an explicit `native_input_type` hint. Address type was inferred automatically as Taproot key-path (P2TR) by default. Schema authors SHOULD declare `NATIVE` explicitly for deterministic type binding. |
+| `BTSL_WARN_09`  | `CONST_SHADOWING`           | A local `CONST` declaration shadows a global `CONST` identifier of the same name. |
 
 > **Implementer Note — Network Heterogeneity:** BTSL schemas using `OP_RETURN` payloads
 > larger than 80 bytes are valid under Bitcoin Core v30+ default policy but will be
@@ -1058,27 +1133,23 @@ PSBT_SCHEMA TRICOUNT:
         payment = (2 * @MEAN) - @A2 - @A3
         fees_btc = vSize(CURRENT_PSBT) * @FEE_RATE
         fees = @MAKER_FEE + fees_btc
-        fees_bob = fees / 2
-        fees_caro = fees - fees_bob
         ; Mapping the @PARAM to snake_case for use in the OUTPUTS block
         maker_fee_val = @MAKER_FEE
-        c_bob  = REF(@BOB_UTXO.amount) - (@MEAN - @A2) - fees_bob
-        c_caro = REF(@CARO_UTXO.amount) - (@MEAN - @A3) - fees_caro
+        c_bob  = REF(@BOB_UTXO.amount) - (@MEAN - @A2) - (fees / 2)
+        c_caro = REF(@CARO_UTXO.amount) - (@MEAN - @A3) - (fees / 2)
 
     ASSERT:
         0: c_bob >= DUST_LIMIT
         1: c_caro >= DUST_LIMIT
-        2: payment >= DUST_LIMIT
-        3: REF(@BOB_UTXO.amount) >= (@MEAN - @A2) + fees_bob
-        4: REF(@CARO_UTXO.amount) >= (@MEAN - @A3) + fees_caro
+        2: payment > 0
+        3: REF(@BOB_UTXO.amount) >= (@MEAN - @A2) + (fees / 2)
+        4: REF(@CARO_UTXO.amount) >= (@MEAN - @A3) + (fees / 2)
 ```
 
-> **Note on `fees`:** The variable `fees` aggregates miner fees (`fees_btc`) and the maker
-> service fee (`@MAKER_FEE`). The maker amount is also paid on a normal output (`maker_fee_val`).
-> The implicit balance check (§4.3.C) therefore uses **`fees_btc` when present**:
-> `SUM(INPUTS) == SUM(OUTPUTS) + fees_btc`. Split `fees` into `fees_bob` and `fees_caro`
-> so `fees_bob + fees_caro = fees` exactly (avoid losing 1 sat when `fees` is odd and two
-> `(fees / 2)` truncations are used).
+> **Note on `fees`:** The variable `fees` aggregates both miner fees and the maker
+> service fee. This is intentional: the implicit balance check (§4.3.C) will verify
+> `SUM(INPUTS) == SUM(OUTPUTS) + fees`, which accounts for all satoshis leaving the
+> inputs and not reaching the visible outputs.
 
 ---
 
@@ -1232,7 +1303,7 @@ PSBT_SCHEMA VAULT_UNLOCK:
             script_params:
                 USER_PK = @KEY_PUB
             witness_data:
-                SIG1 = <SIGN_WITH(@USER_KEY)>
+                USER_SIG = <SIGN_WITH(@USER_KEY)>
 
     OUTPUTS:
         0: @USER_ADDR final_payout sats
@@ -1414,6 +1485,7 @@ These vectors validate the canonical weight calculation (§3.5).
 - [ ] `DUST_LIMIT` built-in constant = 546 sats (overridable via `CONST:`).
 - [ ] `NUMS_KEY` built-in constant = `0x50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0`.
 - [ ] `From()` UTXO resolver: `Pubkey` address derivation (P2TR default / `NATIVE` override), largest-first selection, mandatory `AS alias`, `alias.amount` in `calc`, `alias.address` in `OUTPUTS`. Raise `BTSL_ERR_09` if no confirmed UTXO found; emit `BTSL_WARN_08` if type inferred.
+- [ ] Witness nominal binding (P2TR paths with `witness:` only): each `witness_data` assignment MUST match exactly (case-sensitive, same order) the `witness_placeholder` names in the referenced path’s `witness:` block; raise `BTSL_ERR_10` on mismatch, missing entry, or order violation. Skip this check for P2WSH/P2SH unlocks without `witness:` placeholders.
 
 ### C. Security, Compliance & Errors
 
@@ -1422,8 +1494,8 @@ These vectors validate the canonical weight calculation (§3.5).
 - [ ] `nSequence` encoding for `sequence:` field per BIP68 (§9.5).
 - [ ] `<empty>` witness placeholder: pushes 0-byte item onto witness stack.
 - [ ] `PSBT_GLOBAL_UNKNOWN` namespace injection per §5.2.1 encoding spec.
-- [ ] Complete error table: `BTSL_ERR_00` through `BTSL_ERR_09` (including `04a`–`04e`).
-- [ ] Complete warning table: `BTSL_WARN_01` through `BTSL_WARN_08`.
+- [ ] Complete error table: `BTSL_ERR_00` through `BTSL_ERR_10` (including `04a`–`04e`).
+- [ ] Complete warning table: `BTSL_WARN_01` through `BTSL_WARN_09`.
 - [ ] RBF/CPFP recommendation: `nLocktime` on child transactions referencing `workflow_ref`.
 
 ---
@@ -1531,4 +1603,3 @@ valid block, and extract the UTXO value offline prior to resolving `ASSERT` clau
 > **Community discussion:** Future maintainers are invited to define the optimal
 > encapsulation format (new `PSBT_GLOBAL_UNKNOWN` subtypes or a coupled `.spv` sidecar
 > file) and to evaluate the RAM footprint impact on hardware wallet microcontrollers.
-
