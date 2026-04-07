@@ -6,6 +6,10 @@ Parse BTSL schemas, bind parameters against live on-chain data, generate JavaScr
 
 > **All operations run entirely in your browser. No private keys are ever involved.**
 
+## npm packages (`@btsl/*`)
+
+Publishable libraries (parser, runtime, validator) are developed in a **separate** directory/repo: **`btsl-packages`** (sibling of this repo in a typical `dev/` layout). See `../btsl-packages/ARCHITECTURE.md` for the package split and roadmap. This repository remains the playground and the reference copy of the engine under `lib/btsl/` until those packages consume it.
+
 ## What is BTSL?
 
 BTSL is a declarative language that specifies **what a valid Bitcoin transaction should look like** before anyone signs it. It separates construction logic from validation logic, enabling independent verification of transaction invariants (fees, change, output structure) by any signer or auditor.
@@ -14,6 +18,12 @@ BTSL does not modify the PSBT format or introduce new consensus rules. It operat
 
 - [BTSL Specification v1.0](https://github.com/tsua0002/btsl-standard)
 - [Delving Bitcoin discussion](https://delvingbitcoin.org/t/btsl-bitcoin-transaction-schema-language-a-declarative-validation-schema-for-psbt-workflows/2338)
+
+**Local spec copy:** `docs/spec/` mirrors the current markdown from the [`btsl-standard`](https://github.com/tsua0002/btsl-standard) repo (`btsl-spec-v1.0.md`, `btsl-implementation-guide-v1.0.md`, `btsl-checker-predicates-v1.0.md`) for offline reading and diffing against this codebase. It is not consumed by the app build; refresh it when the upstream spec changes.
+
+## Validator (Checker)
+
+The **Validator** tab runs `runCheckerPipeline` (`lib/btsl/checker-pipeline.ts`) against the [BTSL v1.0.0 spec §9.3.1](https://github.com/tsua0002/btsl-standard/blob/v1.0.0/spec/btsl-spec-v1.0.md) checker predicates: **S-1/S-2** (`ERR_13`), **I-1…I-4**, **I-3** (`ERR_11`), **O-1/O-2**, **A-1…A-5** (algebraic phase), with error codes aligned to **§5.3**. Field-level helpers live in `lib/btsl/checker-predicates.ts`.
 
 ## Pipeline
 

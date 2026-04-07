@@ -155,7 +155,7 @@ export async function fetchUTXO(txid: string, vout: number): Promise<ResolvedUTX
     
     const output = txData.vout[vout];
     const scriptPubKey = output.scriptpubkey;
-    const scriptType = detectScriptType(scriptPubKey);
+    const scriptType = detectScriptTypeFromSpk(scriptPubKey);
     
     return {
       txid,
@@ -173,8 +173,8 @@ export async function fetchUTXO(txid: string, vout: number): Promise<ResolvedUTX
   }
 }
 
-// Detect script type from scriptPubKey hex
-function detectScriptType(scriptPubKey: string): ResolvedUTXO['scriptType'] {
+/** Detect script type from scriptPubKey hex (Checker I-1 / API). */
+export function detectScriptTypeFromSpk(scriptPubKey: string): ResolvedUTXO['scriptType'] {
   // P2WPKH: 0014{20 bytes} = 22 bytes = 44 hex chars
   if (scriptPubKey.length === 44 && scriptPubKey.startsWith('0014')) {
     return 'P2WPKH';

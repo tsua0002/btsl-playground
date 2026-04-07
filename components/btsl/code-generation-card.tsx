@@ -29,7 +29,9 @@ import { compileScriptAsmToHex } from '@/lib/btsl/script-compiler';
 import {
   buildOutputScriptsForPreciseVsize,
   computePreciseTxMetrics,
+  resolveBoundParamAddress,
 } from '@/lib/btsl/precise-weight';
+import { detectTestnetFromBoundParams } from '@/lib/btsl/network-detect';
 import { buildOpReturnScript } from '@/lib/btsl/op-return-script';
 import { buildScriptOutputPkScript } from '@/lib/btsl/script-output-pk';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -383,22 +385,21 @@ async function simulatePSBTGeneration(
   for (const c of schema.consts ?? []) {
     constsMapForWeight[c.name] = c.value;
   }
-  const getBoundAddress = (paramKey: string): string | undefined => {
-    const r = boundParams[paramKey]?.resolved;
-    if (r && typeof r === 'object' && 'address' in r) {
-      return (r as { address?: string }).address;
-    }
-    return undefined;
-  };
+  const getBoundAddress = (paramKey: string): string | undefined =>
+    resolveBoundParamAddress(boundParams, paramKey);
 
   const bitcoin = await import('bitcoinjs-lib');
   const ecc = await import('tiny-secp256k1');
   bitcoin.initEccLib(ecc);
+  const isTestnet = detectTestnetFromBoundParams(boundParams);
+  const network = isTestnet ? bitcoin.networks.testnet : bitcoin.networks.bitcoin;
+  logs.push(`[BTSL] Network detected: ${isTestnet ? 'TESTNET' : 'MAINNET'}`);
+
   const outputScripts = buildOutputScriptsForPreciseVsize(
     schema,
     constsMapForWeight,
     getBoundAddress,
-    bitcoin.networks.bitcoin,
+    network,
     boundParams,
     document
   );
@@ -495,29 +496,6 @@ async function simulatePSBTGeneration(
 
   const { Buffer } = await import('buffer');
 
-  // Detect network from first input or output address
-  let isTestnet = false;
-  for (const input of schema.inputs) {
-    const paramName = input.utxoRef.replace(/^@/, '').replace(/\.[a-z]+$/, '');
-    const param = boundParams[paramName];
-    if (param?.rawValue) {
-      const addr = String(param.rawValue);
-      if (addr.startsWith('tb1') || addr.startsWith('m') || addr.startsWith('n') || addr.startsWith('2')) {
-        isTestnet = true;
-        break;
-      }
-    }
-    if (param?.resolved && typeof param.resolved === 'object' && 'address' in param.resolved) {
-      const addr = String((param.resolved as { address?: string }).address || '');
-      if (addr.startsWith('tb1') || addr.startsWith('m') || addr.startsWith('n') || addr.startsWith('2')) {
-        isTestnet = true;
-        break;
-      }
-    }
-  }
-  logs.push(`[BTSL] Network detected: ${isTestnet ? 'TESTNET' : 'MAINNET'}`);
-
-  const network = isTestnet ? bitcoin.networks.testnet : bitcoin.networks.bitcoin;
   const psbt = new bitcoin.Psbt({ network });
 
   // Add inputs (hash = txid in internal byte order for bitcoinjs-lib)

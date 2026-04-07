@@ -166,22 +166,34 @@ export function toPayloadHex(raw: string, asText: boolean): string {
   return s.replace(/\s/g, '');
 }
 
-// Error codes from spec
+// Error codes — aligned with BTSL v1.0.0 spec §5.3
 export const ERROR_CODES: Record<string, string> = {
-  'BTSL_ERR_00': 'Syntax error — file not parseable (indentation, VERSION absent, missing section)',
-  'BTSL_ERR_01': 'Type mismatch — injected UTXO does not match declared type (NATIVE or UNLOCK)',
-  'BTSL_ERR_02': 'Binding failure — UTXO does not match anchored pubkey/script',
-  'BTSL_ERR_03': 'Circular dependency — mutual dependencies detected',
+  'BTSL_ERR_00':
+    'Syntax error — .bts unparsable, or PSBT decode failure; not used for PSBT-vs-schema shape (see ERR_13)',
+  'BTSL_ERR_01':
+    'Type mismatch — Checker I-1 (native type vs chain) or I-4 (nSequence vs schema / §9.5)',
+  'BTSL_ERR_02':
+    'Binding failure — I-1/I-2 script binding, or O-1 PSBT output scriptPubKey ≠ schema-derived script',
+  'BTSL_ERR_03': 'Circular dependency — mutual DEPENDS_ON detected',
   'BTSL_ERR_04a': 'Invalid derived field — manual input of calculated field (e.g., control_block)',
   'BTSL_ERR_04b': 'Undeclared param — reference to undeclared @PARAM',
   'BTSL_ERR_04c': 'Invalid script type — unrecognized script type',
   'BTSL_ERR_04d': 'Forward reference in calc — variable used before declaration',
-  'BTSL_ERR_04e': 'Invalid Pubkey param — @PARAM is not a valid 33-byte compressed key or From() used on non-Pubkey',
-  'BTSL_ERR_05': 'Unresolved dependency — SUM() or REF() called on an unresolved or unbroadcast dependency',
-  'BTSL_ERR_06': 'Assert failure — ASSERT condition failed or balance invariant SUM(INPUTS) != SUM(OUTPUTS) + fees',
-  'BTSL_ERR_07': 'Dust output — output amount below DUST_LIMIT (546 sats)',
-  'BTSL_ERR_08': 'Arithmetic error — division by zero, overflow, or negative SAT value',
+  'BTSL_ERR_04e':
+    'Invalid Pubkey param — @PARAM is not a valid 33-byte compressed key or From() used on non-Pubkey',
+  'BTSL_ERR_05':
+    'Unresolved dependency — REF/SUM on missing data, or I-2 Case C parent workflow not broadcast',
+  'BTSL_ERR_06':
+    'Assert failure — ASSERT false, balance invariant (A-3), or O-2 output amount ≠ calc/schema',
+  'BTSL_ERR_07': 'Dust output — standard/SCRIPT output below DUST_LIMIT',
+  'BTSL_ERR_08': 'Arithmetic error — division by zero, overflow, or negative SAT in calc (A-1)',
   'BTSL_ERR_09': 'UTXO resolution failure — From() could not find a confirmed UTXO for the given Pubkey',
+  'BTSL_ERR_10':
+    'Witness binding mismatch — witness_data vs witness: placeholders (P2TR paths with witness: block)',
+  'BTSL_ERR_11': 'Prevout value mismatch — I-3: PSBT input amount ≠ independently fetched chain value',
+  'BTSL_ERR_12':
+    'Outpoint mismatch — I-2 Case A (params) or Case C (confirmed parent vs PSBT prevout)',
+  'BTSL_ERR_13': 'Schema mismatch — S-1/S-2: PSBT input/output count ≠ schema (fast-fail)',
 };
 
 export const WARNING_CODES: Record<string, string> = {

@@ -11,8 +11,24 @@ import type { BTSLDocument } from './types';
 import { compileScriptAsmToHex } from './script-compiler';
 import { buildScriptOutputPkScript } from './script-output-pk';
 import { parseMultisigMFromAsm } from './multisig-m';
-import type { BoundParams } from './types';
+import type { BoundParams, ResolvedUTXO } from './types';
 import { buildOpReturnScript } from './op-return-script';
+
+/**
+ * Resolve @PARAM to a payment/change address string. Matches Maker PSBT binding:
+ * string `resolved`, UTXO-shaped `resolved.address`, or `rawValue`.
+ */
+export function resolveBoundParamAddress(boundParams: BoundParams, paramKey: string): string | undefined {
+  const p = boundParams[paramKey];
+  if (!p) return undefined;
+  const r = p.resolved;
+  if (typeof r === 'string') return r;
+  if (r && typeof r === 'object' && 'address' in r) {
+    return (r as ResolvedUTXO).address;
+  }
+  if (typeof p.rawValue === 'string') return p.rawValue;
+  return undefined;
+}
 
 /** Max standard DER ECDSA sig in witness (BIP 141 WCC). */
 const P2WPKH_SIG_PLACEHOLDER = 73;

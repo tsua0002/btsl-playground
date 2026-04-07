@@ -349,7 +349,7 @@ export default function BTSLPlayground() {
             <p className="text-center text-xs text-muted-foreground max-w-xl">
               {interfaceTab === 'maker'
                 ? 'Maker: parse schema → bind PARAMS → generate → export an unsigned PSBT (BIP-174). Sign in your wallet, then broadcast.'
-                : 'Validator: keep the same schema and confirmed PARAMS as in Maker, paste a PSBT base64/hex → chain audit, calc replay, and ASSERT checks (spec §9.3).'}
+                : 'Validator: same schema + PARAMS as Maker, paste PSBT (base64/hex) → Checker predicates §9.3.1 (shape S-1/S-2, I-1…I-4, O-1/O-2, calc/ASSERT, dust, weight).'}
             </p>
             {interfaceTab === 'validator' && card3Complete && (
               <p className="text-center text-xs text-muted-foreground max-w-md">

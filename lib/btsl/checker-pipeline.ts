@@ -1,5 +1,6 @@
 /**
- * BTSL Checker (Verifier) pipeline — spec §9.3, implementation guide Part 2 §2.1–2.4.
+ * BTSL Checker (Verifier) pipeline — spec §9.3.1 (phases: parse → shape → field-level → algebraic).
+ * Implementation guide Part 2 §2.2.x. Normative baseline: BTSL v1.0.0 (§9.3.1).
  */
 
 import type * as bitcoin from 'bitcoinjs-lib';
@@ -16,6 +17,15 @@ import {
 } from './runtime-expr';
 import { computePreciseTxMetricsFromPsbt } from './precise-weight';
 import { boundParamsWithPsbtImpliedFeerate } from './schema-feerate';
+import {
+  getPsbtInputSpkHex,
+  checkInputI1,
+  checkInputI2Workflow,
+  checkInputI2CaseA,
+  checkInputI4,
+  checkOutputsO1,
+} from './checker-predicates';
+import { detectTestnetFromBoundParams } from './network-detect';
 
 export interface CheckerResult {
   success: boolean;
@@ -27,24 +37,6 @@ export interface CheckerResult {
 function createLogCollector(): { logs: string[]; sink: { push: (s: string) => void } } {
   const logs: string[] = [];
   return { logs, sink: { push: (s: string) => logs.push(s) } };
-}
-
-function detectTestnet(boundParams: BoundParams): boolean {
-  for (const param of Object.values(boundParams)) {
-    if (param?.rawValue) {
-      const addr = String(param.rawValue);
-      if (addr.startsWith('tb1') || addr.startsWith('m') || addr.startsWith('n') || addr.startsWith('2')) {
-        return true;
-      }
-    }
-    if (param?.resolved && typeof param.resolved === 'object' && 'address' in param.resolved) {
-      const addr = String((param.resolved as { address?: string }).address || '');
-      if (addr.startsWith('tb1') || addr.startsWith('m') || addr.startsWith('n') || addr.startsWith('2')) {
-        return true;
-      }
-    }
-  }
-  return false;
 }
 
 function getPsbtInputDeclaredValue(
@@ -62,7 +54,7 @@ function getPsbtInputDeclaredValue(
     const vout = psbt.txInputs[index].index;
     return prevTx.outs[vout].value;
   }
-  throw new Error('BTSL_ERR_01: PSBT input has neither witnessUtxo nor nonWitnessUtxo');
+  throw new Error('BTSL_ERR_00: PSBT input has neither witnessUtxo nor nonWitnessUtxo');
 }
 
 function getPrevoutId(psbt: bitcoin.Psbt, index: number): { txid: string; vout: number } {
@@ -72,7 +64,7 @@ function getPrevoutId(psbt: bitcoin.Psbt, index: number): { txid: string; vout: 
 }
 
 /**
- * Run Checker validation: decode PSBT, zero-trust UTXO restore, calc replay, output cross-check, ASSERT, balance, dust, weight.
+ * Run Checker validation: §9.3.1 phase order — shape (S-1/S-2) → field-level (I-*, O-1) → algebraic (calc, O-2, ASSERT, A-3…).
  */
 export async function runCheckerPipeline(
   psbtBase64OrHex: string,
@@ -95,11 +87,11 @@ export async function runCheckerPipeline(
     const ecc = await import('tiny-secp256k1');
     bitcoin.initEccLib(ecc);
 
-    const isTestnet = detectTestnet(boundParams);
+    const isTestnet = detectTestnetFromBoundParams(boundParams);
     const network = isTestnet ? bitcoin.networks.testnet : bitcoin.networks.bitcoin;
 
     logs.push('[checker] ========================================');
-    logs.push(`[checker] Checker pipeline — schema: ${schema.name}`);
+    logs.push(`[checker] Checker pipeline — schema: ${schema.name} (§9.3.1)`);
     logs.push('[checker] ========================================');
 
     const trimmed = psbtBase64OrHex.trim();
@@ -117,45 +109,81 @@ export async function runCheckerPipeline(
       }
     }
 
+    /* Phase shape — S-1 / S-2 (fast-fail) → BTSL_ERR_13 */
     if (psbt.inputCount !== schema.inputs.length) {
       return fail(
-        'BTSL_ERR_00',
-        `Input count mismatch — PSBT has ${psbt.inputCount}, schema expects ${schema.inputs.length}`
+        'BTSL_ERR_13',
+        `SCHEMA_MISMATCH (S-1): PSBT has ${psbt.inputCount} inputs, schema expects ${schema.inputs.length}`
       );
     }
     const outLen = psbt.txOutputs.length;
     if (outLen !== schema.outputs.length) {
       return fail(
-        'BTSL_ERR_00',
-        `Output count mismatch — PSBT has ${outLen}, schema expects ${schema.outputs.length}`
+        'BTSL_ERR_13',
+        `SCHEMA_MISMATCH (S-2): PSBT has ${outLen} outputs, schema expects ${schema.outputs.length}`
       );
     }
 
-    logs.push('[checker] Step 2.1 — PSBT decoded, structure OK');
+    logs.push('[checker] Phase shape — S-1/S-2 OK');
 
     const chainByParam = new Map<string, bigint>();
     const certifiedInputValues: bigint[] = [];
 
     for (let i = 0; i < psbt.inputCount; i++) {
+      const inputDef = schema.inputs[i];
       const { txid, vout } = getPrevoutId(psbt, i);
-      const psbtVal = getPsbtInputDeclaredValue(psbt, i, bitcoin.Transaction);
 
-      logs.push(`[checker] Step 2.2 — Fetch chain UTXO ${txid}:${vout}`);
+      const wfErr = checkInputI2Workflow(inputDef, txid, vout, workflowContext);
+      if (wfErr) {
+        return fail(wfErr.code, wfErr.message);
+      }
+
+      const paramKey = inputDef.utxoRef.replace(/^@/, '');
+      const i2a = checkInputI2CaseA(inputDef, txid, vout, paramKey, boundParams);
+      if (i2a) {
+        return fail(i2a.code, i2a.message);
+      }
+
+      let psbtSpkHex: string;
+      try {
+        psbtSpkHex = getPsbtInputSpkHex(psbt, i, bitcoin.Transaction);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return fail('BTSL_ERR_00', msg.replace(/^BTSL_ERR_00:\s*/, '') || msg);
+      }
+
+      let psbtVal: bigint;
+      try {
+        psbtVal = getPsbtInputDeclaredValue(psbt, i, bitcoin.Transaction);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return fail('BTSL_ERR_00', msg.replace(/^BTSL_ERR_00:\s*/, '') || msg);
+      }
+
+      logs.push(`[checker] Field-level — fetch chain UTXO ${txid}:${vout} (I-3)`);
       const chainUtxo = await fetchUTXO(txid, vout);
       const chainVal = BigInt(chainUtxo.value);
 
+      const i1 = checkInputI1(inputDef, chainUtxo, psbtSpkHex, document, boundParams, network);
+      if (i1) {
+        return fail(i1.code, i1.message);
+      }
+
       if (psbtVal !== chainVal) {
         return fail(
-          'BTSL_ERR_01',
-          `PSBT input value ${psbtVal} does not match blockchain value ${chainVal} for ${txid}:${vout}`
+          'BTSL_ERR_11',
+          `PREVOUT_VALUE_MISMATCH (I-3): PSBT input value ${psbtVal} ≠ chain value ${chainVal} for ${txid}:${vout}`
         );
       }
 
-      certifiedInputValues.push(chainVal);
+      const i4 = checkInputI4(inputDef, psbt.txInputs[i].sequence);
+      if (i4) {
+        return fail(i4.code, i4.message);
+      }
 
-      const paramName = schema.inputs[i].utxoRef.replace(/^@/, '');
-      chainByParam.set(paramName, chainVal);
-      logs.push(`[checker] Input ${i}: chain value ${chainVal} sats — PSBT value matches`);
+      certifiedInputValues.push(chainVal);
+      chainByParam.set(paramKey, chainVal);
+      logs.push(`[checker] Input ${i}: I-1/I-3/I-4 OK — chain value ${chainVal} sats`);
     }
 
     const getUtxoAmount = (paramName: string): bigint => {
@@ -175,7 +203,7 @@ export async function runCheckerPipeline(
       boundParams
     );
     logs.push(
-      `[checker] Step 2.2b — Replay vsize from PSBT outputs + schema witness template: ${vsize} vB (${txWeightWu} wu)`
+      `[checker] vSize from PSBT + schema witness template: ${vsize} vB (${txWeightWu} wu)`
     );
 
     const sumInputsForFee = certifiedInputValues.reduce((a, b) => a + b, BigInt(0));
@@ -192,7 +220,7 @@ export async function runCheckerPipeline(
       (s) => logs.push(s)
     );
 
-    logs.push(`[checker] Step 2.3 — Replay calc (chain-certified inputs)`);
+    logs.push('[checker] Algebraic — replay calc (A-1, chain-certified inputs)');
     const calcVars = runCalcBlock(schema, document, boundForCalc, workflowContext, vsize, certifiedInputValues, {
       getUtxoAmount,
       logs: sink,
@@ -205,17 +233,23 @@ export async function runCheckerPipeline(
       calcVars
     );
 
-    logs.push('[checker] Step 2.4 — Cross-check PSBT output amounts vs schema/calc');
+    const o1 = checkOutputsO1(psbt, schema, document, boundParams, network);
+    if (o1) {
+      return fail(o1.code, o1.message);
+    }
+    logs.push('[checker] Field-level — O-1 output scriptPubKey OK');
+
+    logs.push('[checker] Field-level — O-2 output amounts vs calc');
     for (let i = 0; i < outLen; i++) {
       const actual = psbt.txOutputs[i].value;
       const expected = expectedOutputAmounts[i];
       if (actual !== expected) {
         return fail(
           'BTSL_ERR_06',
-          `Output ${i} amount mismatch — PSBT has ${actual}, expected ${expected} from schema/calc`
+          `Output ${i} amount mismatch (O-2) — PSBT has ${actual}, expected ${expected} from schema/calc`
         );
       }
-      logs.push(`[checker] Output ${i}: ${actual} sats OK`);
+      logs.push(`[checker] Output ${i}: ${actual} sats OK (O-2)`);
     }
 
     evaluateAsserts(schema, document, boundForCalc, workflowContext, vsize, certifiedInputValues, calcVars, {
@@ -255,7 +289,7 @@ export async function runCheckerPipeline(
     logWeightWarning(txWeightWu, sink);
 
     logs.push('[checker] ========================================');
-    logs.push('[checker] All Checker steps passed — signing authorized (logical)');
+    logs.push('[checker] All Checker predicates passed — signing authorized (logical)');
     logs.push('[checker] ========================================');
 
     return { success: true, authorized: true, logs };

@@ -3,6 +3,8 @@ import * as bitcoin from 'bitcoinjs-lib';
 import * as ecc from 'tiny-secp256k1';
 bitcoin.initEccLib(ecc);
 import { runCheckerPipeline } from '@/lib/btsl/checker-pipeline';
+import { checkOutputsO1 } from '@/lib/btsl/checker-predicates';
+import { detectTestnetFromBoundParams } from '@/lib/btsl/network-detect';
 import type { BTSLDocument, BTSLSchema, BoundParams } from '@/lib/btsl/types';
 import * as api from '@/lib/btsl/api';
 
@@ -124,7 +126,7 @@ describe('runCheckerPipeline', () => {
       { steps: {} }
     );
     expect(r.success).toBe(false);
-    expect(r.error?.code).toBe('BTSL_ERR_01');
+    expect(r.error?.code).toBe('BTSL_ERR_11');
   });
 
   it('fails BTSL_ERR_06 on output amount mismatch', async () => {
@@ -138,6 +140,53 @@ describe('runCheckerPipeline', () => {
     );
     expect(r.success).toBe(false);
     expect(r.error?.code).toBe('BTSL_ERR_06');
+  });
+
+  it('fails BTSL_ERR_13 on input count mismatch (S-1)', async () => {
+    const psbt = new bitcoin.Psbt({ network: bitcoin.networks.bitcoin });
+    psbt.addInput({
+      hash: Buffer.from(TXID, 'hex').reverse(),
+      index: 0,
+      witnessUtxo: { script: Buffer.from(SCRIPT_HEX, 'hex'), value: WITNESS_VALUE },
+    });
+    psbt.addInput({
+      hash: Buffer.from(TXID, 'hex').reverse(),
+      index: 1,
+      witnessUtxo: { script: Buffer.from(SCRIPT_HEX, 'hex'), value: WITNESS_VALUE },
+    });
+    psbt.addOutput({ script: Buffer.from(SCRIPT_HEX, 'hex'), value: OUT_VALUE });
+    const r = await runCheckerPipeline(
+      psbt.toBase64(),
+      minimalDoc(schema),
+      schema,
+      boundParams(),
+      { steps: {} }
+    );
+    expect(r.success).toBe(false);
+    expect(r.error?.code).toBe('BTSL_ERR_13');
+  });
+
+  it('fails BTSL_ERR_12 when PSBT prevout does not match bound UTXO (I-2 Case A)', async () => {
+    const psbtB64 = buildPsbt(WITNESS_VALUE, OUT_VALUE);
+    const wrongTxid = 'b'.repeat(64);
+    const bp = boundParams();
+    bp.U = {
+      ...bp.U,
+      resolved: {
+        ...(bp.U.resolved as object),
+        txid: wrongTxid,
+        vout: 0,
+      } as import('@/lib/btsl/types').ResolvedUTXO,
+    };
+    const r = await runCheckerPipeline(
+      psbtB64,
+      minimalDoc(schema),
+      schema,
+      bp,
+      { steps: {} }
+    );
+    expect(r.success).toBe(false);
+    expect(r.error?.code).toBe('BTSL_ERR_12');
   });
 
   it('fails BTSL_ERR_06 when implicit balance breaks (fees)', async () => {
@@ -158,5 +207,61 @@ describe('runCheckerPipeline', () => {
     );
     expect(r.success).toBe(false);
     expect(r.error?.code).toBe('BTSL_ERR_06');
+  });
+});
+
+describe('detectTestnetFromBoundParams', () => {
+  it('does not treat SATOSHI values starting with 2 (e.g. @MEAN=2300) as testnet', () => {
+    const bp: BoundParams = {
+      MEAN: { type: 'SATOSHI', rawValue: '2300', resolved: 2300 },
+      A3: { type: 'SATOSHI', rawValue: '2100', resolved: 2100 },
+    };
+    expect(detectTestnetFromBoundParams(bp)).toBe(false);
+  });
+
+  it('returns true for a valid testnet ADDRESS param', () => {
+    const bp: BoundParams = {
+      DEST: { type: 'ADDRESS', rawValue: 'tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx', resolved: 'tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx' },
+    };
+    expect(detectTestnetFromBoundParams(bp)).toBe(true);
+  });
+});
+
+describe('checkOutputsO1 ADDRESS @param binding', () => {
+  /** Valid mainnet bech32 (bitcoinjs-lib test vector style). */
+  const MAINNET_ADDR = 'bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4';
+
+  it('passes when resolved is a plain string (matches UI / Maker PSBT path)', () => {
+    const paySchema: BTSLSchema = {
+      name: 'pay',
+      params: [],
+      inputs: [],
+      outputs: [
+        {
+          index: 0,
+          type: 'ADDRESS',
+          address: '@ALICE',
+          amount: 10_000,
+        },
+      ],
+      calc: [],
+      asserts: [],
+    };
+    const doc = minimalDoc(paySchema);
+    const spk = Buffer.from(
+      bitcoin.address.toOutputScript(MAINNET_ADDR, bitcoin.networks.bitcoin)
+    );
+    const psbt = new bitcoin.Psbt({ network: bitcoin.networks.bitcoin });
+    psbt.addOutput({ script: spk, value: BigInt(10_000) });
+
+    const bp: BoundParams = {
+      ALICE: {
+        type: 'ADDRESS',
+        rawValue: MAINNET_ADDR,
+        resolved: MAINNET_ADDR,
+      },
+    };
+
+    expect(checkOutputsO1(psbt, paySchema, doc, bp, bitcoin.networks.bitcoin)).toBe(null);
   });
 });
