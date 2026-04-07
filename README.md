@@ -6,9 +6,9 @@ Parse BTSL schemas, bind parameters against live on-chain data, generate JavaScr
 
 > **All operations run entirely in your browser. No private keys are ever involved.**
 
-## npm packages (`@btsl/*`)
+## Related local workspace (`btsl-packages`)
 
-Publishable libraries (parser, runtime, validator) are developed in a **separate** directory/repo: **`btsl-packages`** (sibling of this repo in a typical `dev/` layout). See `../btsl-packages/ARCHITECTURE.md` for the package split and roadmap. This repository remains the playground and the reference copy of the engine under `lib/btsl/` until those packages consume it.
+If you use a multi-folder layout (e.g. `btsl/`), **`btsl-packages`** may sit next to this project as another **local directory** — not something this repo installs from npm or git by default. That folder is where an eventual split into publishable libraries (planned under the **`@btsl/*` npm scope**) is described; see `../btsl-packages/ARCHITECTURE.md` when present. **This repository** is self-contained: the playground and the reference engine ship in **`lib/btsl/`** here.
 
 ## What is BTSL?
 
@@ -27,16 +27,18 @@ The **Validator** tab runs `runCheckerPipeline` (`lib/btsl/checker-pipeline.ts`)
 
 ## Pipeline
 
-The playground implements the **Maker pipeline** from the spec:
+The playground implements **Maker (construction)** and **Validator (Checker, §9.3.1)** from the spec:
 
 ```
 Schema Input → Parameter Binding → Code Generation → PSBT Output
+                                      └→ Validator tab: paste PSBT, replay calc, field-level + algebraic checks
 ```
 
 1. **Schema Input** — Paste or select a BTSL schema from the built-in catalog.
 2. **Parameter Binding** — Fill `@PARAM` values (UTXOs, addresses, fee rate). UTXOs are fetched live from Blockstream API, fee rates from Mempool.space.
 3. **Code Generation** — Generates standalone JavaScript that constructs the PSBT via `bitcoinjs-lib`, runs `calc`, evaluates `ASSERT`, and performs the zero-trust audit (balance check, dust check, weight check).
 4. **PSBT Output** — Export the unsigned PSBT as Base64 or Hex. Import into Sparrow, Coldcard, bitcoin-cli, or any BIP174-compatible signer.
+5. **Validator** — Same bindings (and optional `.params` merge) plus a PSBT: independent chain fetch for inputs, **O-1/O-2**, ASSERT replay, balance and dust checks per §9.3.1.
 
 ## Built-in Examples
 
@@ -67,7 +69,7 @@ Parser corpus tests validate all built-in examples and error cases against deter
 
 ## Status
 
-This playground covers the **Maker (construction) pipeline** of the BTSL specification. The **Validator (verification) pipeline** — including Zero-Trust UTXO restoration and independent ASSERT replay — is under active development.
+The playground tracks **BTSL v1.0**: **Maker** (PSBT construction, `calc`, generated audit helpers) and **Checker / Validator** (`runCheckerPipeline`, §9.3.1 — shape, field-level I-/O- predicates, chain-certified inputs, algebraic replay, ASSERT). Behavior is intended to match the normative spec; report gaps against `docs/spec/` or the upstream [btsl-standard](https://github.com/tsua0002/btsl-standard) repo.
 
 ## License
 
