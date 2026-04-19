@@ -706,8 +706,10 @@ function parseOutputs(lines: string[], startIdx: number): { outputs: BTSLOutput[
         continue;
       }
       
-      // SCRIPT output: SCRIPT NAME amount sats
-      const scriptMatch = rest.match(/^SCRIPT\s+([A-Z][A-Za-z0-9_]*)\s+(\d+|[a-z_][a-z0-9_]*)\s*sats?$/);
+      // SCRIPT output: SCRIPT NAME amount sats (literal, calc var, or @PARAM e.g. @VAULT_AMOUNT)
+      const scriptMatch = rest.match(
+        /^SCRIPT\s+([A-Z][A-Za-z0-9_]*)\s+(\d+|@[A-Z][A-Za-z0-9_]*|[a-z_][a-z0-9_]*)\s*sats?$/
+      );
       if (scriptMatch) {
         const output: BTSLOutput = {
           index,

@@ -442,8 +442,9 @@ async function simulatePSBTGeneration(
   logs.push('[BTSL] ----------------------------------------');
   logs.push('[BTSL] Phase 4 — Building outputs');
   const outputValues = computeOutputAmounts(schema, consts, boundParams, calcVars);
-  for (const output of schema.outputs) {
-    const amt = outputValues[output.index] ?? BigInt(0);
+  for (let oi = 0; oi < schema.outputs.length; oi++) {
+    const output = schema.outputs[oi];
+    const amt = outputValues[oi] ?? BigInt(0);
     const addrDisplay = output.address || output.type;
     logs.push(`[BTSL] Output ${output.index}: ${addrDisplay} - ${amt} sats`);
   }
