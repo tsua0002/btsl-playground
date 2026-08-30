@@ -20,6 +20,7 @@ import {
   validateHexData,
   type PubkeyAddressType,
 } from './api';
+import { parseWorkflowOutpoint, resolveWorkflowUtxo } from './workflow-utxo';
 
 export interface HydrateBoundParamsOptions {
   payloadParamNames: string[];
@@ -79,7 +80,7 @@ function typeResolvedForParam(
 
 export async function hydrateBoundParamsFromValues(
   params: BTSLParam[],
-  values: Record<string, string>,
+  inputValues: Record<string, string>,
   opts: HydrateBoundParamsOptions
 ): Promise<{ ok: true; bound: BoundParams } | { ok: false; errors: string[] }> {
   const payloadAsText: Record<string, boolean> = { ...opts.payloadAsText };
@@ -87,6 +88,15 @@ export async function hydrateBoundParamsFromValues(
     if (opts.existingPayloadAsTextFallback?.[p.name] !== undefined && payloadAsText[p.name] === undefined) {
       payloadAsText[p.name] = Boolean(opts.existingPayloadAsTextFallback[p.name]);
     }
+  }
+
+  const values: Record<string, string> = { ...inputValues };
+  for (const p of params) {
+    const wf = opts.workflowDerivedUtxos[p.name];
+    if (!wf) continue;
+    const step = opts.workflowContext?.steps?.[wf.schemaName];
+    const op = parseWorkflowOutpoint(values[p.name] ?? '', wf.vout, step?.txid);
+    if (op) values[p.name] = `${op.txid}:${op.vout}`;
   }
 
   const { valid, errors } = validateBoundParams(params, values, {
@@ -135,27 +145,20 @@ export async function hydrateBoundParamsFromValues(
 
       const wf = opts.workflowDerivedUtxos[p.name];
       if (wf) {
-        const step = opts.workflowContext?.steps?.[wf.schemaName];
-        const txid = step?.txid;
-        if (!txid?.trim()) {
-          return {
-            ok: false,
-            errors: [
-              `UTXO @${p.name}: missing txid for workflow step ${wf.schemaName} — set it after signing/broadcast`,
-            ],
-          };
+        const resolved = await resolveWorkflowUtxo({
+          paramName: p.name,
+          rawValue: raw,
+          ref: wf,
+          step: opts.workflowContext?.steps?.[wf.schemaName],
+        });
+        if (!resolved.ok) {
+          return { ok: false, errors: [resolved.error] };
         }
-        try {
-          const utxo = await fetchUTXO(txid.trim(), wf.vout);
-          bound[p.name] = {
-            type: p.type,
-            rawValue: `${utxo.txid}:${utxo.vout}`,
-            resolved: utxo,
-          };
-        } catch (e) {
-          const msg = e instanceof Error ? e.message : String(e);
-          return { ok: false, errors: [`Workflow UTXO @${p.name}: ${msg}`] };
-        }
+        bound[p.name] = {
+          type: p.type,
+          rawValue: `${resolved.utxo.txid}:${resolved.utxo.vout}`,
+          resolved: resolved.utxo,
+        };
         continue;
       }
 

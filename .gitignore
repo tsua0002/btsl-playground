@@ -1,10 +1,21 @@
 node_modules/
 .next/
-.env*.local
+.env
+.env.*
 .DS_Store
 .vercel
 tsconfig.tsbuildinfo
 plans/
+
+# Local session / secrets — never publish
+.temp
+*.temp
+.swap-chain-*
+
+# One-off signing/broadcast helpers (read local KEY / signed hex)
+scripts/sign-swap-chain.ts
+scripts/broadcast-swap-chain.ts
+scripts/swap-chain-session.ts
 
 # Rust CLIs under tools/
 tools/**/target/

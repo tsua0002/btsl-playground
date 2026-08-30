@@ -191,10 +191,13 @@ export function checkInputI2Workflow(
   const step = workflowContext.steps[wf.schemaName];
   const parentTxid = step?.txid?.trim();
   if (!parentTxid) {
-    return {
-      code: 'BTSL_ERR_05',
-      message: `Input ${input.index}: workflow parent schema ${wf.schemaName} has no broadcast txid (I-2 Case C)`,
-    };
+    if (psbtVout !== wf.vout) {
+      return {
+        code: 'BTSL_ERR_12',
+        message: `Input ${input.index}: PSBT vout ${psbtVout} does not match workflow parent ${wf.schemaName}:${wf.vout}`,
+      };
+    }
+    return null;
   }
   if (!txidEq(psbtTxid, parentTxid) || psbtVout !== wf.vout) {
     return {
@@ -215,7 +218,6 @@ export function checkInputI2CaseA(
   paramKey: string,
   boundParams: BoundParams
 ): { code: 'BTSL_ERR_12'; message: string } | null {
-  if (input.workflowRef) return null;
   const p = boundParams[paramKey];
   const r = p?.resolved;
   if (!r || typeof r !== 'object' || !('txid' in r)) return null;

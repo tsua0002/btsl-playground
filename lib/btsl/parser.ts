@@ -1018,6 +1018,14 @@ function parseSchema(lines: string[], startIdx: number): { schema: BTSLSchema; e
       i = endIdx;
       continue;
     }
+
+    // Spec §9.4: DEPENDS_ON may appear as a schema-body declaration (not only under OPTIONS:)
+    const bareDepends = trimmed.match(/^DEPENDS_ON\s+([A-Z][A-Za-z0-9_]*)$/);
+    if (bareDepends) {
+      schema.options = { ...schema.options, dependsOn: bareDepends[1] };
+      i++;
+      continue;
+    }
     
     // Parse INPUTS
     if (trimmed === 'INPUTS:') {

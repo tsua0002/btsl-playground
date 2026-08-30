@@ -34,7 +34,7 @@ export function QuickExampleCards({
   showSectionHeader = true,
 }: QuickExampleCardsProps) {
   const featured = EXAMPLES_CATALOG.filter((e) =>
-    ['simple_payment', 'multisig_2_of_2', 'op_return_deploy', 'taproot_vault', 'tri_count'].includes(e.id)
+    ['simple_payment', 'multisig_2_of_2', 'op_return_deploy', 'brc20_swap_chain', 'taproot_vault', 'tri_count'].includes(e.id)
   );
 
   return (

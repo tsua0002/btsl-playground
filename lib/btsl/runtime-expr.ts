@@ -116,6 +116,21 @@ function parseFactor(tokens: (bigint | string)[], pos: { i: number }): bigint {
   throw new Error(`Unexpected token: ${String(token)}`);
 }
 
+/** Integer sat products: `141 * 1.2` → `169` so bigint calc can run with fractional sat/vB. */
+export function foldDecimalProductsToSats(expr: string): string {
+  let cur = expr;
+  const re = /(\d+(?:\.\d+)?)\s*\*\s*(\d+(?:\.\d+)?)/g;
+  for (let i = 0; i < 8; i++) {
+    const next = cur.replace(re, (_, a: string, b: string) => {
+      if (!a.includes('.') && !b.includes('.')) return `${a} * ${b}`;
+      return String(Math.floor(Number(a) * Number(b)));
+    });
+    if (next === cur) break;
+    cur = next;
+  }
+  return cur;
+}
+
 export function buildConsts(document: BTSLDocument, schema: BTSLSchema): Record<string, bigint | string> {
   const consts: Record<string, bigint | string> = { DUST_LIMIT: BigInt(DUST_LIMIT) };
   for (const c of document.consts) {
@@ -222,6 +237,9 @@ export function evalExpression(
       }
       const param = ctx.boundParams[paramName];
       if (typeof param?.resolved === 'number') {
+        if (!Number.isInteger(param.resolved)) {
+          return BigInt(Math.floor(param.resolved));
+        }
         return BigInt(param.resolved);
       }
       return BigInt(0);
@@ -284,6 +302,8 @@ export function evalExpression(
     }
     return '0';
   });
+
+  result = foldDecimalProductsToSats(result);
 
   try {
     const tokens = tokenize(result);

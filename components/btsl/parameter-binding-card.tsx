@@ -14,8 +14,9 @@ import { QRScanner } from '@/components/btsl/qr-scanner';
 import type { WorkflowContext, WorkflowOutputRef } from '@/lib/btsl/types';
 import { BTSLParam, BoundParams, ResolvedUTXO, ParamType } from '@/lib/btsl/types';
 import { fetchUTXO, fetchFeeRate, fetchUTXOByPubkey, fetchUTXOByAddress, validateAddress, validateHexData, parseUTXOString, type PubkeyAddressType } from '@/lib/btsl/api';
-import { parseDotParamsFile, upsertParamsFileLine } from '@/lib/btsl/params-file';
+import { parseDotParamsFile, upsertParamsFileLine, lookupParamsFileValue } from '@/lib/btsl/params-file';
 import { hydrateBoundParamsFromValues } from '@/lib/btsl/hydrate-bound-params';
+import { parseWorkflowOutpoint, resolveWorkflowUtxo } from '@/lib/btsl/workflow-utxo';
 
 interface ParameterBindingCardProps {
   params: BTSLParam[];
@@ -30,6 +31,8 @@ interface ParameterBindingCardProps {
   /** Derived workflow UTXO params: internal param name -> workflow output ref */
   workflowDerivedUtxos?: Record<string, WorkflowOutputRef>;
   workflowContext?: WorkflowContext;
+  /** When set, only these PARAMS are shown / required — others stay in state for later schemas. */
+  visibleParamNames?: string[];
   onBound: (boundParams: BoundParams) => void;
   /** Called when the user applies a `.params` file so the Validator can prefer these entries over the form. */
   onParamsFileApplied?: (entries: Record<string, string>) => void;
@@ -58,6 +61,7 @@ export function ParameterBindingCard({
   derivedParamAddressTypes = {},
   workflowDerivedUtxos = {},
   workflowContext,
+  visibleParamNames,
   onBound,
   onParamsFileApplied,
   disabled,
@@ -84,6 +88,8 @@ export function ParameterBindingCard({
     });
   }, [params]);
 
+  const [payloadAsText, setPayloadAsText] = useState<Record<string, boolean>>({});
+
   // Apply prefill values from example selection (non-UTXO only — UTXOs need real data)
   const [appliedPrefillKey, setAppliedPrefillKey] = useState<string | null>(null);
   useEffect(() => {
@@ -91,6 +97,7 @@ export function ParameterBindingCard({
     const prefillKey = JSON.stringify(prefillValues);
     if (prefillKey === appliedPrefillKey) return;
 
+    const payloadTextUpdates: Record<string, boolean> = {};
     setParamStates((prev) => {
       const next = { ...prev };
       for (const p of params) {
@@ -98,16 +105,21 @@ export function ParameterBindingCard({
         const val = prefillValues[p.name];
         if (val !== undefined && val !== '') {
           next[p.name] = { ...(next[p.name] ?? {}), value: val, isValid: undefined, error: undefined };
+          if (payloadParamNames.includes(p.name) && !validateHexData(val)) {
+            payloadTextUpdates[p.name] = true;
+          }
         }
       }
       return next;
     });
+    if (Object.keys(payloadTextUpdates).length > 0) {
+      setPayloadAsText((prev) => ({ ...prev, ...payloadTextUpdates }));
+    }
 
     setAppliedPrefillKey(prefillKey);
     onPrefillConsumed?.();
-  }, [prefillValues, params, appliedPrefillKey, onPrefillConsumed]);
+  }, [prefillValues, params, appliedPrefillKey, onPrefillConsumed, payloadParamNames]);
 
-  const [payloadAsText, setPayloadAsText] = useState<Record<string, boolean>>({});
   const [paramsFileText, setParamsFileText] = useState('');
   const [paramsFileWarnings, setParamsFileWarnings] = useState<string[]>([]);
   const [isValidating, setIsValidating] = useState(false);
@@ -121,6 +133,34 @@ export function ParameterBindingCard({
     setParamsFileWarnings([]);
     derivedAutoSuccessSourceRef.current = {};
   }, [paramNamesKey]);
+
+  useEffect(() => {
+    if (disabled) return;
+    setParamStates((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const [name, ref] of Object.entries(workflowDerivedUtxos)) {
+        const txid = workflowContext?.steps?.[ref.schemaName]?.txid?.trim();
+        if (!txid) continue;
+        const nextVal = `${txid}:${ref.vout}`;
+        const cur = next[name]?.value?.trim() ?? '';
+        if (cur === nextVal) continue;
+        next[name] = {
+          ...(next[name] ?? { value: '' }),
+          value: nextVal,
+          error: undefined,
+        };
+        changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [disabled, workflowDerivedUtxos, workflowContext]);
+
+  const visibleParams = useMemo(() => {
+    if (!visibleParamNames?.length) return params;
+    const allow = new Set(visibleParamNames);
+    return params.filter((p) => allow.has(p.name));
+  }, [params, visibleParamNames]);
 
   const updateParamState = useCallback((name: string, updates: Partial<ParamState>) => {
     setParamStates(prev => {
@@ -329,32 +369,29 @@ export function ParameterBindingCard({
   const handleFetchUTXOFromWorkflow = useCallback(async (paramName: string) => {
     const ref = workflowDerivedUtxos[paramName];
     if (!ref) return;
-    const step = workflowContext?.steps?.[ref.schemaName];
-    const txid = step?.txid;
-    if (!txid) {
+    const raw = paramStatesRef.current[paramName]?.value ?? '';
+    updateParamState(paramName, { isLoading: true, error: undefined });
+    const result = await resolveWorkflowUtxo({
+      paramName,
+      rawValue: raw,
+      ref,
+      step: workflowContext?.steps?.[ref.schemaName],
+    });
+    if (!result.ok) {
       updateParamState(paramName, {
-        error: `Missing txid for workflow step ${ref.schemaName} — set it after signing/broadcast`,
+        error: result.error,
+        isLoading: false,
         isValid: false,
       });
       return;
     }
-    updateParamState(paramName, { isLoading: true, error: undefined });
-    try {
-      const utxo = await fetchUTXO(txid.trim(), ref.vout);
-      updateParamState(paramName, {
-        value: `${utxo.txid}:${utxo.vout}`,
-        resolved: utxo,
-        isLoading: false,
-        isValid: true,
-        error: undefined,
-      });
-    } catch (e) {
-      updateParamState(paramName, {
-        error: e instanceof Error ? e.message : 'Failed to fetch workflow UTXO',
-        isLoading: false,
-        isValid: false,
-      });
-    }
+    updateParamState(paramName, {
+      value: `${result.utxo.txid}:${result.utxo.vout}`,
+      resolved: result.utxo,
+      isLoading: false,
+      isValid: true,
+      error: undefined,
+    });
   }, [workflowContext, workflowDerivedUtxos, updateParamState]);
 
   const handleValueChange = useCallback((param: BTSLParam, value: string) => {
@@ -456,34 +493,48 @@ export function ParameterBindingCard({
     e.target.value = '';
   }, []);
 
+  const applyParsedEntries = useCallback(
+    (entries: Record<string, string>) => {
+      for (const p of params) {
+        const val = lookupParamsFileValue(entries, p.name);
+        if (val !== undefined) handleValueChange(p, val);
+      }
+      const payloadTextUpdates: Record<string, boolean> = {};
+      for (const name of payloadParamNames) {
+        const v = lookupParamsFileValue(entries, name);
+        if (v !== undefined && v !== '' && !validateHexData(v)) payloadTextUpdates[name] = true;
+      }
+      if (Object.keys(payloadTextUpdates).length > 0) {
+        setPayloadAsText((prev) => ({ ...prev, ...payloadTextUpdates }));
+      }
+      onParamsFileApplied?.(entries);
+      window.setTimeout(() => {
+        for (const p of params) {
+          if (p.type !== 'UTXO') continue;
+          if (derivedParamSources[p.name] || workflowDerivedUtxos[p.name]) continue;
+          const v = lookupParamsFileValue(entries, p.name);
+          if (v === undefined) continue;
+          if (!parseUTXOString(v.trim())) continue;
+          void fetchUtxoByRaw(p.name, v);
+        }
+      }, 0);
+    },
+    [
+      params,
+      handleValueChange,
+      payloadParamNames,
+      onParamsFileApplied,
+      derivedParamSources,
+      workflowDerivedUtxos,
+      fetchUtxoByRaw,
+    ]
+  );
+
   const handleApplyParamsFile = useCallback(() => {
     const { entries, warnings } = parseDotParamsFile(paramsFileText);
     setParamsFileWarnings(warnings);
-    for (const p of params) {
-      if (entries[p.name] !== undefined) {
-        handleValueChange(p, entries[p.name]);
-      }
-    }
-    onParamsFileApplied?.(entries);
-    window.setTimeout(() => {
-      for (const p of params) {
-        if (p.type !== 'UTXO') continue;
-        if (derivedParamSources[p.name] || workflowDerivedUtxos[p.name]) continue;
-        const v = entries[p.name];
-        if (v === undefined) continue;
-        if (!parseUTXOString(v.trim())) continue;
-        void fetchUtxoByRaw(p.name, v);
-      }
-    }, 0);
-  }, [
-    paramsFileText,
-    params,
-    handleValueChange,
-    onParamsFileApplied,
-    derivedParamSources,
-    workflowDerivedUtxos,
-    fetchUtxoByRaw,
-  ]);
+    applyParsedEntries(entries);
+  }, [paramsFileText, applyParsedEntries]);
 
   const handleLoadDemoParams = useCallback(() => {
     const text = demoParamsTemplate?.trim();
@@ -491,42 +542,22 @@ export function ParameterBindingCard({
     setParamsFileText(text);
     const { entries, warnings } = parseDotParamsFile(text);
     setParamsFileWarnings(warnings);
-    for (const p of params) {
-      if (entries[p.name] !== undefined) {
-        handleValueChange(p, entries[p.name]);
-      }
-    }
-    onParamsFileApplied?.(entries);
-    window.setTimeout(() => {
-      for (const p of params) {
-        if (p.type !== 'UTXO') continue;
-        if (derivedParamSources[p.name] || workflowDerivedUtxos[p.name]) continue;
-        const v = entries[p.name];
-        if (v === undefined) continue;
-        if (!parseUTXOString(v.trim())) continue;
-        void fetchUtxoByRaw(p.name, v);
-      }
-    }, 0);
-  }, [
-    demoParamsTemplate,
-    params,
-    handleValueChange,
-    onParamsFileApplied,
-    derivedParamSources,
-    workflowDerivedUtxos,
-    fetchUtxoByRaw,
-  ]);
+    applyParsedEntries(entries);
+  }, [demoParamsTemplate, applyParsedEntries]);
 
   const handleConfirmParameters = useCallback(async () => {
     setIsValidating(true);
     setValidationErrors([]);
 
+    const visible = new Set(visibleParams.map((p) => p.name));
     const values: Record<string, string> = {};
     params.forEach((p) => {
-      values[p.name] = paramStates[p.name]?.value || '';
+      const v = paramStates[p.name]?.value || '';
+      if (visible.has(p.name) || v.trim()) values[p.name] = v;
     });
+    const hydrateParams = params.filter((p) => p.name in values);
 
-    const result = await hydrateBoundParamsFromValues(params, values, {
+    const result = await hydrateBoundParamsFromValues(hydrateParams, values, {
       payloadParamNames,
       payloadAsText,
       derivedParamSources,
@@ -546,6 +577,7 @@ export function ParameterBindingCard({
     onBound(result.bound);
   }, [
     params,
+    visibleParams,
     paramStates,
     payloadParamNames,
     payloadAsText,
@@ -557,7 +589,7 @@ export function ParameterBindingCard({
     onBound,
   ]);
 
-  const allValid = params.every((p) => {
+  const allValid = visibleParams.every((p) => {
     const state = paramStates[p.name] ?? { value: '' };
     const v = state.value?.trim() ?? '';
 
@@ -570,7 +602,10 @@ export function ParameterBindingCard({
         return srcState.isValid !== false;
       }
       if (workflowDerivedUtxos[p.name]) {
-        return true;
+        const ref = workflowDerivedUtxos[p.name];
+        return Boolean(
+          parseWorkflowOutpoint(v, ref.vout, workflowContext?.steps?.[ref.schemaName]?.txid)
+        );
       }
       if (!v) return false;
       return /^[0-9a-fA-F]{64}:\d+$/.test(v);
@@ -634,10 +669,10 @@ export function ParameterBindingCard({
                 <>
                   <Input
                     id={param.name}
-                    placeholder={`From workflow ${workflowDerivedUtxos[param.name].schemaName}:${workflowDerivedUtxos[param.name].outputIndex} — click Resolve`}
+                    placeholder={`${workflowDerivedUtxos[param.name].schemaName} txid or txid:${workflowDerivedUtxos[param.name].vout}`}
                     value={state.value}
-                    readOnly
-                    className="font-mono text-sm bg-muted"
+                    onChange={(e) => handleValueChange(param, e.target.value)}
+                    className="font-mono text-sm"
                     disabled={disabled}
                   />
                   <Button
@@ -710,7 +745,7 @@ export function ParameterBindingCard({
                 className="font-mono text-sm"
                 disabled={disabled}
                 min={1}
-                step={1}
+                step="any"
               />
               <Button
                 variant="outline"
@@ -802,6 +837,14 @@ export function ParameterBindingCard({
           </label>
         )}
 
+        {workflowDerivedUtxos[param.name] && (
+          <p className="text-xs text-muted-foreground">
+            Spends {workflowDerivedUtxos[param.name].schemaName} output {workflowDerivedUtxos[param.name].vout}.
+            Type the parent txid (need not be broadcast). Resolve uses the explorer when the tx is confirmed,
+            otherwise the parent PSBT outputs.
+          </p>
+        )}
+
         {/* Error message */}
         {state.error && (
           <p className="text-sm text-destructive">{state.error}</p>
@@ -840,7 +883,7 @@ export function ParameterBindingCard({
               Card 2 - Parameter Binding
             </CardTitle>
             <CardDescription>
-              Bind values to the {params.length} detected parameters
+              Bind values to this schema’s parameters (shared keys stay filled across workflow steps)
             </CardDescription>
           </div>
           {allValid && (
@@ -965,7 +1008,7 @@ export function ParameterBindingCard({
           </div>
         )}
 
-        {!disabled && params.map(renderParamInput)}
+        {!disabled && visibleParams.map(renderParamInput)}
 
         {validationErrors.length > 0 && (
           <Alert variant="destructive">

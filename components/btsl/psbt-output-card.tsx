@@ -27,6 +27,8 @@ import { QRCodeModal } from '@/components/btsl/qr-code-display';
 
 interface PSBTOutputCardProps {
   result: ExecutionResult | null;
+  /** All per-schema results (workflow pack). */
+  allResults?: Record<string, ExecutionResult | null>;
   schemaName?: string | null;
   workflowContext?: WorkflowContext;
   onSetTxid?: (schemaName: string, txid: string) => void;
@@ -39,6 +41,7 @@ interface PSBTOutputCardProps {
 
 export function PSBTOutputCard({
   result,
+  allResults,
   schemaName,
   workflowContext,
   onSetTxid,
@@ -48,6 +51,7 @@ export function PSBTOutputCard({
 }: PSBTOutputCardProps) {
   const [copiedBase64, setCopiedBase64] = useState(false);
   const [copiedHex, setCopiedHex] = useState(false);
+  const [copiedPack, setCopiedPack] = useState(false);
   const [txidDraft, setTxidDraft] = useState('');
 
   useEffect(() => {
@@ -77,6 +81,27 @@ export function PSBTOutputCard({
       console.error('Failed to copy:', error);
     }
   }, [result?.psbtHex]);
+
+  const packHex = useMemo(() => {
+    if (!allResults) return '';
+    const parts: string[] = [];
+    for (const [name, r] of Object.entries(allResults)) {
+      if (!r?.success || !r.psbtHex) continue;
+      parts.push(`=== ${name} ===`, r.psbtHex, '');
+    }
+    return parts.join('\n').trim();
+  }, [allResults]);
+
+  const handleCopyPack = useCallback(async () => {
+    if (!packHex) return;
+    try {
+      await navigator.clipboard.writeText(packHex);
+      setCopiedPack(true);
+      setTimeout(() => setCopiedPack(false), 2000);
+    } catch (error) {
+      console.error('Failed to copy pack:', error);
+    }
+  }, [packHex]);
 
   const mempoolPreviewHref = useMemo(() => {
     if (!result?.success) return null;
@@ -195,7 +220,7 @@ export function PSBTOutputCard({
 
             <div className="grid gap-2">
               <Label htmlFor="workflow-txid" className="text-xs">
-                Broadcast txid (after signing)
+                Parent txid for the next step (predicted or after signing)
               </Label>
               <div className="flex gap-2">
                 <Input
@@ -215,8 +240,8 @@ export function PSBTOutputCard({
               </div>
               <div className="flex items-center gap-2 text-xs text-muted-foreground flex-wrap">
                 <span>
-                  Child schemas with <span className="font-mono">DEPENDS_ON</span> will unlock once the parent txid is
-                  saved.
+                  Child schemas with <span className="font-mono">DEPENDS_ON</span> can chain immediately — enter this
+                  txid on the next step even before broadcast.
                 </span>
                 {explorerLinkTemplate && /^[0-9a-fA-F]{64}$/.test(txidDraft.trim()) && (
                   <a
@@ -234,12 +259,12 @@ export function PSBTOutputCard({
         )}
 
         {/* PSBT Formats */}
-        <Tabs defaultValue="base64">
+        <Tabs defaultValue="hex">
           <TabsList className="grid w-full grid-cols-2">
-            <TabsTrigger value="base64">Base64</TabsTrigger>
             <TabsTrigger value="hex">Hex</TabsTrigger>
+            <TabsTrigger value="base64">Base64</TabsTrigger>
           </TabsList>
-          
+
           <TabsContent value="base64" className="space-y-2">
             <div className="relative">
               <div className="rounded-xl border bg-muted/30 p-4">
@@ -318,6 +343,18 @@ export function PSBTOutputCard({
             </div>
           </TabsContent>
         </Tabs>
+
+        {packHex && (
+          <div className="flex flex-col gap-2 rounded-lg border p-3 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-sm text-muted-foreground">
+              Copy every unsigned PSBT hex built in this workflow (one block per schema).
+            </p>
+            <Button variant="outline" size="sm" className="shrink-0" onClick={() => void handleCopyPack()}>
+              {copiedPack ? <CheckCircle className="mr-2 h-4 w-4 text-green-600" /> : <Copy className="mr-2 h-4 w-4" />}
+              Copy all hex
+            </Button>
+          </div>
+        )}
 
         {/* How to sign */}
         <div className="rounded-xl border bg-muted/30 p-4">

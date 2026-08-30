@@ -1,3 +1,5 @@
+import { buildBrc20SwapChainBtsl, BRC20_SWAP_DEMO_PARAMS } from './brc20-swap-chain';
+
 export type ExampleCategoryId =
   | 'simple_payment'
   | 'tri_count'
@@ -465,6 +467,32 @@ export const EXAMPLES_CATALOG: ExampleDefinition[] = [
       FEE_RATE: '2',
     },
     demoParamsTemplate: DEMO_PARAMS_OP_RETURN_DEPLOY,
+    explorerLinkTemplate: 'https://blockstream.info/tx/{txid}',
+  },
+  {
+    id: 'brc20_swap_chain',
+    categoryId: 'op_return',
+    title: 'Chained OP_RETURN (5 PSBTs)',
+    subtitle: 'SWAP_1 → SWAP_5 — JSON payload + P2TR change',
+    description:
+      'Five chained PSBTs: each step embeds a JSON OP_RETURN and spends the previous change. Build unsigned PSBTs in order (parent need not be broadcast), sign, then broadcast SWAP_1…SWAP_5.',
+    useCase: 'Multi-tx protocols that must be signed as a package before any parent is confirmed.',
+    icon: '',
+    btsl: buildBrc20SwapChainBtsl(5),
+    quickTutorial: {
+      steps: [
+        'Paste your USER_UTXO into the demo fixture (empty by default). Check “Treat as text” on @PAYLOAD. Load demo fixture.',
+        'Fetch @USER_UTXO, Confirm, generate SWAP_1. The playground stores a predicted txid from the unsigned PSBT.',
+        'Use “Generate remaining unsigned PSBTs”, or switch schemas, keep/paste the parent txid, Confirm, generate the next hop.',
+        'Sign each PSBT, then broadcast SWAP_1 through SWAP_5 in order.',
+      ],
+      requiredParams: ['@USER_UTXO', '@PAYLOAD', '@FEE_RATE', '@CHANGE_ADDRESS'],
+    },
+    prefillParams: {
+      PAYLOAD: '{"p":"brc-20","op":"swap","tick":"DEMO","amt":"1"}',
+      FEE_RATE: '1.2',
+    },
+    demoParamsTemplate: BRC20_SWAP_DEMO_PARAMS,
     explorerLinkTemplate: 'https://blockstream.info/tx/{txid}',
   },
   {

@@ -4,8 +4,9 @@
  */
 
 import type * as bitcoin from 'bitcoinjs-lib';
-import type { BTSLDocument, BTSLSchema, BoundParams, WorkflowContext } from './types';
+import type { BTSLDocument, BTSLSchema, BoundParams, ResolvedUTXO, WorkflowContext } from './types';
 import { fetchUTXO } from './api';
+import { resolvedUtxoFromWorkflowStep } from './workflow-utxo';
 import {
   buildConsts,
   runCalcBlock,
@@ -161,7 +162,38 @@ export async function runCheckerPipeline(
       }
 
       logs.push(`[checker] Field-level — fetch chain UTXO ${txid}:${vout} (I-3)`);
-      const chainUtxo = await fetchUTXO(txid, vout);
+      let chainUtxo: ResolvedUTXO;
+      try {
+        chainUtxo = await fetchUTXO(txid, vout);
+      } catch (e) {
+        const wf = inputDef.workflowRef;
+        const local = wf
+          ? resolvedUtxoFromWorkflowStep(txid, vout, workflowContext.steps[wf.schemaName])
+          : null;
+        const boundResolved = boundParams[paramKey]?.resolved;
+        const fromBound =
+          boundResolved &&
+          typeof boundResolved === 'object' &&
+          'txid' in boundResolved &&
+          'scriptPubKey' in boundResolved &&
+          'value' in boundResolved
+            ? (boundResolved as ResolvedUTXO)
+            : null;
+        if (local) {
+          logs.push(
+            `[checker] I-3 — parent ${wf?.schemaName} not on-chain; using local parent PSBT output ${txid}:${vout}`
+          );
+          chainUtxo = local;
+        } else if (fromBound) {
+          logs.push(
+            `[checker] I-3 — parent not on-chain; using bound workflow UTXO ${fromBound.txid}:${fromBound.vout}`
+          );
+          chainUtxo = fromBound;
+        } else {
+          const msg = e instanceof Error ? e.message : String(e);
+          return fail('BTSL_ERR_05', msg);
+        }
+      }
       const chainVal = BigInt(chainUtxo.value);
 
       const i1 = checkInputI1(inputDef, chainUtxo, psbtSpkHex, document, boundParams, network);

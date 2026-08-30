@@ -11,6 +11,23 @@ export interface ParseDotParamsFileResult {
   warnings: string[];
 }
 
+export function lookupParamsFileValue(
+  entries: Record<string, string>,
+  paramName: string
+): string | undefined {
+  if (entries[paramName] !== undefined) return entries[paramName];
+  const aliases: Record<string, string[]> = {
+    USER: ['USER_UTXO'],
+    USER_UTXO: ['USER'],
+    CHANGE_ADDR: ['CHANGE_ADDRESS'],
+    CHANGE_ADDRESS: ['CHANGE_ADDR'],
+  };
+  for (const a of aliases[paramName] ?? []) {
+    if (entries[a] !== undefined) return entries[a];
+  }
+  return undefined;
+}
+
 export function parseDotParamsFile(content: string): ParseDotParamsFileResult {
   const entries: Record<string, string> = {};
   const warnings: string[] = [];
@@ -80,7 +97,7 @@ export function mergeParamValuesWithParamsFile(
   const file = fileEntries ?? {};
   const out: Record<string, string> = {};
   for (const p of params) {
-    const fromFile = file[p.name]?.trim() ?? '';
+    const fromFile = lookupParamsFileValue(file, p.name)?.trim() ?? '';
     const fromForm = boundParams?.[p.name]?.rawValue?.trim() ?? '';
     out[p.name] = fromForm.length > 0 ? fromForm : fromFile;
   }

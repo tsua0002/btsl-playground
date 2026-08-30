@@ -145,6 +145,8 @@ export interface WorkflowSchemaResult {
     index: number;
     valueSats: string;
     address?: string;
+    /** Parent output scriptPubKey hex — used to chain the next PSBT before broadcast. */
+    scriptPubKey?: string;
   }>;
 }
 

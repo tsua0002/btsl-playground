@@ -18,7 +18,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { cn } from '@/lib/utils';
 import { orderSchemasByDependsOn } from '@/lib/btsl/workflow';
-import { Bitcoin, FileCode, Github, ExternalLink, Sun, Moon, Monitor, Check, ChevronDown, Zap } from 'lucide-react';
+import { buildRemainingWorkflowPsbt } from '@/lib/btsl/workflow-chain';
+import { Bitcoin, FileCode, Github, ExternalLink, Sun, Moon, Monitor, Check, ChevronDown, Zap, Loader2 } from 'lucide-react';
 import { useTheme } from 'next-themes';
 import { useFirstVisit } from '@/hooks/use-first-visit';
 import type { ExampleDefinition } from '@/lib/btsl/examples-catalog';
@@ -43,6 +44,8 @@ export default function BTSLPlayground() {
   /** Validator tab: Checker finished successfully */
   const [validatorComplete, setValidatorComplete] = useState(false);
   const [interfaceTab, setInterfaceTab] = useState<'maker' | 'validator'>('maker');
+  const [chainBusy, setChainBusy] = useState(false);
+  const [chainError, setChainError] = useState<string | null>(null);
   /** Snapshot from last "Apply to fields" on a `.params` file — Validator Checker prefers these values. */
   const [paramsFileEntries, setParamsFileEntries] = useState<Record<string, string> | null>(null);
 
@@ -91,16 +94,10 @@ export default function BTSLPlayground() {
       setValidatorComplete(false);
       setBoundParams(null);
       setParamsFileEntries(null);
+      setChainError(null);
     } else {
       setCard1Complete(false);
     }
-  }, []);
-
-  const handleParamsBound = useCallback((bound: BoundParams) => {
-    setBoundParams(bound);
-    setCard2Complete(true);
-    setCard3Complete(false);
-    setValidatorComplete(false);
   }, []);
 
   /** `.params` / fee sync changes the form contract — drop stale binding so Maker uses Confirm again. */
@@ -110,7 +107,6 @@ export default function BTSLPlayground() {
     setCard2Complete(false);
     setCard3Complete(false);
     setValidatorComplete(false);
-    setExecutionResultsBySchema({});
   }, []);
 
   const handleExecutionResult = useCallback((result: ExecutionResult) => {
@@ -146,6 +142,30 @@ export default function BTSLPlayground() {
     }
     return map;
   }, [document]);
+
+  const handleParamsBound = useCallback((bound: BoundParams) => {
+    setBoundParams((prev) => ({ ...(prev ?? {}), ...bound }));
+    setCard2Complete(true);
+    setCard3Complete(false);
+    setValidatorComplete(false);
+    setWorkflowContext((prev) => {
+      let steps = prev.steps;
+      for (const [name, ref] of Object.entries(workflowDerivedUtxos)) {
+        const resolved = bound[name]?.resolved;
+        if (!resolved || typeof resolved !== 'object' || !('txid' in resolved)) continue;
+        const txid = String((resolved as { txid: string }).txid).trim();
+        if (!txid) continue;
+        steps = {
+          ...steps,
+          [ref.schemaName]: {
+            ...(steps[ref.schemaName] ?? {}),
+            txid,
+          },
+        };
+      }
+      return { steps };
+    });
+  }, [workflowDerivedUtxos]);
 
   const derivedParamSources = useMemo(() => {
     if (!document) return {};
@@ -227,6 +247,35 @@ export default function BTSLPlayground() {
     [params, visibleParamNames]
   );
 
+  const handleGenerateRemaining = useCallback(async () => {
+    if (!document || !boundParams) return;
+    const fromIndex = document.schemas.findIndex((s) => !executionResultsBySchema[s.name]?.success);
+    if (fromIndex < 0) return;
+    setChainBusy(true);
+    setChainError(null);
+    try {
+      const { results, workflow } = await buildRemainingWorkflowPsbt({
+        document,
+        fromIndex,
+        boundParams,
+        workflowContext,
+      });
+      setWorkflowContext(workflow);
+      setExecutionResultsBySchema((prev) => ({ ...prev, ...results }));
+      const failed = Object.entries(results).find(([, r]) => !r.success);
+      if (failed) {
+        setChainError(failed[1].error?.message ?? `Failed ${failed[0]}`);
+      } else {
+        setCard3Complete(true);
+        incrementSuccessfulRuns();
+      }
+    } catch (e) {
+      setChainError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setChainBusy(false);
+    }
+  }, [document, boundParams, executionResultsBySchema, workflowContext, incrementSuccessfulRuns]);
+
   const bindingHydrateContext = useMemo(
     () => ({
       payloadParamNames,
@@ -276,12 +325,18 @@ export default function BTSLPlayground() {
     setExecutionResultsBySchema((prev) => ({ ...prev, [schemaName]: result }));
     if (result.success && result.summary) {
       const outputs = result.summary.outputs;
+      const predictedTxid = result.summary.predictedTxid?.trim();
       setWorkflowContext((prev) => ({
         steps: {
           ...prev.steps,
           [schemaName]: {
             ...(prev.steps[schemaName] ?? {}),
-            outputs: outputs.map((o) => ({ index: o.index, valueSats: o.value })),
+            ...(predictedTxid && !prev.steps[schemaName]?.txid ? { txid: predictedTxid } : {}),
+            outputs: outputs.map((o) => ({
+              index: o.index,
+              valueSats: o.value,
+              scriptPubKey: o.scriptPubKey,
+            })),
           },
         },
       }));
@@ -487,29 +542,55 @@ export default function BTSLPlayground() {
                   ))}
                 </div>
               )}
-              <div className="flex flex-wrap gap-2">
+              <div className="flex gap-2 overflow-x-auto pb-1">
                 {workflowOrder.map((name) => {
                   const schema = document.schemas.find((s) => s.name === name);
                   const dep = schema?.options?.dependsOn;
-                  const unlocked = !dep || Boolean(workflowContext.steps[dep]?.txid);
+                  const parent = dep ? workflowContext.steps[dep] : undefined;
+                  const parentReady = Boolean(parent?.txid || (parent?.outputs && parent.outputs.length > 0));
+                  const unlocked = !dep || parentReady;
                   const isActive = (activeSchemaName ?? workflowOrder[0]) === name;
+                  const built = Boolean(executionResultsBySchema[name]?.success);
                   return (
                     <Button
                       key={name}
                       variant={isActive ? 'default' : 'outline'}
                       size="sm"
+                      className="shrink-0"
                       onClick={() => setActiveSchemaName(name)}
                       disabled={!unlocked}
-                      title={!unlocked ? `Locked: requires txid for ${dep}` : undefined}
+                      title={
+                        !unlocked
+                          ? `Locked: run parent ${dep} first, or enter its txid after building its PSBT`
+                          : built
+                            ? 'Unsigned PSBT ready'
+                            : undefined
+                      }
                     >
-                      {name}
+                      {built ? `${name} ✓` : name}
                     </Button>
                   );
                 })}
               </div>
-              <div className="text-xs text-muted-foreground">
-                A step becomes unlockable once its parent step has a txid set (after signing/broadcast).
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <p className="text-xs text-muted-foreground">
+                  After the parent PSBT is built, the next step unlocks. Enter the previous txid by hand to chain
+                  PSBTs before broadcast (no explorer fetch required).
+                </p>
+                {card2Complete && boundParams && (
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    className="shrink-0"
+                    disabled={chainBusy || !document.schemas.some((s) => !executionResultsBySchema[s.name]?.success)}
+                    onClick={() => void handleGenerateRemaining()}
+                  >
+                    {chainBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                    Generate remaining unsigned PSBTs
+                  </Button>
+                )}
               </div>
+              {chainError && <p className="text-sm text-red-600">{chainError}</p>}
             </div>
           )}
 
@@ -524,7 +605,8 @@ export default function BTSLPlayground() {
           {/* Card 2 - Parameter Binding */}
           <div id="card-parameter-binding">
             <ParameterBindingCard
-              params={schemaBindingParams}
+              params={params}
+              visibleParamNames={visibleParamNames}
               payloadParamNames={payloadParamNames}
               derivedParamSources={derivedParamSources}
               derivedParamSourceTypes={derivedParamSourceTypes}
@@ -551,6 +633,7 @@ export default function BTSLPlayground() {
               />
               <PSBTOutputCard
                 result={activeExecutionResult}
+                allResults={executionResultsBySchema}
                 schemaName={activeSchemaName ?? (document?.schemas?.[activeSchemaIndex]?.name ?? null)}
                 workflowContext={workflowContext}
                 onSetTxid={handleSetWorkflowTxid}
